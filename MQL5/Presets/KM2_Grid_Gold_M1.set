@@ -1,0 +1,40 @@
+; KrishMix EA2 - Grid Brain | XAUUSD M1
+; Additive lots 0.01/0.02/0.03..., ATR-scaled distance, waits out hostile pushes.
+; Exposure caps are OFF (0 = unlimited) as requested - EA3 and EA4 handle drawdown.
+; KEEP InpMagicBase IDENTICAL IN ALL FOUR EAs.
+InpMagicBase=51000
+InpCommissionPerLot=0.0
+InpSlippagePoints=30
+InpBaseLot=0.01
+InpLotMode=1
+InpLotIncrement=0.01
+InpLotMultiplier=1.25
+InpMaxLotPerAdd=1.0
+InpCautiousLotScale=0.5
+InpAtrStepMult=1.2
+InpMinStepPrice=1.0
+InpTrendWidenMult=1.8
+InpExhaustTighten=0.75
+InpHighVolWiden=1.3
+InpExtremeVolWiden=1.8
+InpLevelWiden=1.08
+InpMaxPressureToAdd=55.0
+InpWaitOnExtremeVol=true
+InpWaitOnBreakout=true
+InpRequireBarClose=true
+InpMinSecondsBetween=45
+InpOnlyLosingSide=true
+InpMaxLevels=0
+InpMaxLotsPerSide=0.0
+InpSetTpOnGridLegs=false
+InpGridTpAtrMult=2.5
+InpEmaFast=8
+InpEmaSlow=21
+InpEmaFilter=50
+InpMtf1=15
+InpMtf2=16385
+InpAdxPeriod=14
+InpAtrPeriod=14
+InpDonchianPeriod=40
+InpCrossCheckEA1=false
+InpShowPanel=true
