@@ -117,6 +117,7 @@ struct SignalConfig
    int              bbPeriod;
    double           bbDeviation;
    int              donchianPeriod;
+   int              donchianShift;   // MUST be >= 2, see KM_DefaultSignalConfig
    double           adxTrendLevel;   // above this = trending
    double           adxRangeLevel;   // below this = ranging
    double           volHighRatio;    // atrRatio above this = HIGH
@@ -145,6 +146,13 @@ void KM_DefaultSignalConfig(SignalConfig &c)
    c.bbPeriod        = 20;
    c.bbDeviation     = 2.0;
    c.donchianPeriod  = 40;
+//--- The channel must EXCLUDE the bar whose close is tested against it.
+//--- With shift 1 the tested bar's own high IS the channel high, so
+//--- "close above the channel" would require a bar closing exactly at
+//--- its own high while that high is also the 40-bar extreme. That made
+//--- breakout detection almost impossible. Shift 2 starts the channel
+//--- one bar earlier, which is what makes a breakout meaningful.
+   c.donchianShift   = 2;
    c.adxTrendLevel   = 25.0;
    c.adxRangeLevel   = 18.0;
    c.volHighRatio    = 1.40;
@@ -170,31 +178,63 @@ private:
    MarketView        m_view;
    datetime          m_viewBar;
 
-   bool              One(const int handle, const int buffer, const int shift, double &out) const
+   //--- why the last Refresh failed. Without this a not-ready buffer is
+   //--- silent and the EA looks broken rather than warming up.
+   string            m_lastIssue;
+
+   bool              One(const int handle, const int buffer, const int shift,
+                         double &out, const string name)
      {
       double tmp[];
+
       if(handle == INVALID_HANDLE)
+        {
+         m_lastIssue = name + ": indicator handle is invalid";
          return false;
-      if(CopyBuffer(handle, buffer, shift, 1, tmp) < 1)
+        }
+
+      ResetLastError();
+      int got = CopyBuffer(handle, buffer, shift, 1, tmp);
+      if(got < 1)
+        {
+         m_lastIssue = StringFormat("%s: CopyBuffer returned %d (error %d), %d bars on %s",
+                                    name, got, GetLastError(),
+                                    Bars(m_symbol, m_tf), EnumToString(m_tf));
          return false;
+        }
+
       out = tmp[0];
       return true;
      }
 
    bool              Many(const int handle, const int buffer, const int shift,
-                          const int count, double &out[]) const
+                          const int count, double &out[], const string name)
      {
       if(handle == INVALID_HANDLE)
+        {
+         m_lastIssue = name + ": indicator handle is invalid";
          return false;
-      return (CopyBuffer(handle, buffer, shift, count, out) == count);
+        }
+
+      ResetLastError();
+      int got = CopyBuffer(handle, buffer, shift, count, out);
+      if(got != count)
+        {
+         m_lastIssue = StringFormat("%s: wanted %d values, got %d (error %d)",
+                                    name, count, got, GetLastError());
+         return false;
+        }
+
+      return true;
      }
 
 public:
                      CKMSignals(void)
      {
-      m_symbol  = "";
-      m_tf      = PERIOD_CURRENT;
-      m_viewBar = 0;
+      m_symbol    = "";
+      m_tf        = PERIOD_CURRENT;
+      m_viewBar   = 0;
+      m_lastIssue = "not refreshed yet";
       m_hEmaFast = m_hEmaSlow = m_hEmaFilt = INVALID_HANDLE;
       m_hEmaMtf1 = m_hEmaMtf2 = INVALID_HANDLE;
       m_hAdx = m_hRsi = m_hStoch = m_hMacd = m_hAtr = m_hBands = INVALID_HANDLE;
@@ -205,6 +245,18 @@ public:
                     ~CKMSignals(void) { Release(); }
 
    void              Config(const SignalConfig &c) { m_cfg = c; }
+
+   //--- exact reason the last Refresh could not produce a reading
+   string            LastIssue(void) const { return m_lastIssue; }
+
+   //--- how many bars each side of the stack still needs
+   string            WarmupReport(void)
+     {
+      return StringFormat("%s bars=%d | %s bars=%d | %s bars=%d",
+                          EnumToString(m_tf),          Bars(m_symbol, m_tf),
+                          EnumToString(m_cfg.mtf1),    Bars(m_symbol, m_cfg.mtf1),
+                          EnumToString(m_cfg.mtf2),    Bars(m_symbol, m_cfg.mtf2));
+     }
 
    //+---------------------------------------------------------------+
    bool              Init(const string sym, const ENUM_TIMEFRAMES tf)
@@ -281,32 +333,32 @@ public:
       double emaF, emaS, emaFl, mtf1, mtf2, adx, pDI, mDI, rsi, stoK;
       double bbUp, bbLo, bbBase, atr;
 
-      if(!One(m_hEmaFast, 0, 1, emaF))   { v = t; return false; }
-      if(!One(m_hEmaSlow, 0, 1, emaS))   { v = t; return false; }
-      if(!One(m_hEmaFilt, 0, 1, emaFl))  { v = t; return false; }
-      if(!One(m_hEmaMtf1, 0, 1, mtf1))   { v = t; return false; }
-      if(!One(m_hEmaMtf2, 0, 1, mtf2))   { v = t; return false; }
-      if(!One(m_hAdx, 0, 1, adx))        { v = t; return false; }
-      if(!One(m_hAdx, 1, 1, pDI))        { v = t; return false; }
-      if(!One(m_hAdx, 2, 1, mDI))        { v = t; return false; }
-      if(!One(m_hRsi, 0, 1, rsi))        { v = t; return false; }
-      if(!One(m_hStoch, 0, 1, stoK))     { v = t; return false; }
-      if(!One(m_hBands, 1, 1, bbUp))     { v = t; return false; }
-      if(!One(m_hBands, 2, 1, bbLo))     { v = t; return false; }
-      if(!One(m_hBands, 0, 1, bbBase))   { v = t; return false; }
-      if(!One(m_hAtr, 0, 1, atr))        { v = t; return false; }
+      if(!One(m_hEmaFast, 0, 1, emaF,  "EMA fast"))       { v = t; return false; }
+      if(!One(m_hEmaSlow, 0, 1, emaS,  "EMA slow"))       { v = t; return false; }
+      if(!One(m_hEmaFilt, 0, 1, emaFl, "EMA filter"))     { v = t; return false; }
+      if(!One(m_hEmaMtf1, 0, 1, mtf1,  "EMA on " + EnumToString(m_cfg.mtf1))) { v = t; return false; }
+      if(!One(m_hEmaMtf2, 0, 1, mtf2,  "EMA on " + EnumToString(m_cfg.mtf2))) { v = t; return false; }
+      if(!One(m_hAdx, 0, 1, adx,       "ADX main"))       { v = t; return false; }
+      if(!One(m_hAdx, 1, 1, pDI,       "ADX +DI"))        { v = t; return false; }
+      if(!One(m_hAdx, 2, 1, mDI,       "ADX -DI"))        { v = t; return false; }
+      if(!One(m_hRsi, 0, 1, rsi,       "RSI"))            { v = t; return false; }
+      if(!One(m_hStoch, 0, 1, stoK,    "Stochastic"))     { v = t; return false; }
+      if(!One(m_hBands, 1, 1, bbUp,    "Bollinger upper")){ v = t; return false; }
+      if(!One(m_hBands, 2, 1, bbLo,    "Bollinger lower")){ v = t; return false; }
+      if(!One(m_hBands, 0, 1, bbBase,  "Bollinger base")) { v = t; return false; }
+      if(!One(m_hAtr, 0, 1, atr,       "ATR"))            { v = t; return false; }
 
       //--- MACD histogram needs two bars for its slope
       double macdMain[], macdSig[];
-      if(!Many(m_hMacd, 0, 1, 2, macdMain)) { v = t; return false; }
-      if(!Many(m_hMacd, 1, 1, 2, macdSig))  { v = t; return false; }
+      if(!Many(m_hMacd, 0, 1, 2, macdMain, "MACD main"))   { v = t; return false; }
+      if(!Many(m_hMacd, 1, 1, 2, macdSig,  "MACD signal")) { v = t; return false; }
       double hist0 = macdMain[0] - macdSig[0];
       double hist1 = macdMain[1] - macdSig[1];
 
       //--- long-run ATR average for the volatility ratio
       double atrArr[];
       double atrAvg = atr;
-      if(Many(m_hAtr, 0, 1, m_cfg.atrAvgPeriod, atrArr))
+      if(Many(m_hAtr, 0, 1, m_cfg.atrAvgPeriod, atrArr, "ATR average"))
         {
          double sum = 0.0;
          for(int i = 0; i < m_cfg.atrAvgPeriod; i++)
@@ -316,21 +368,35 @@ public:
         }
 
       //--- Donchian structure
+//--- The channel starts at donchianShift (2), so it does NOT contain the
+//--- bar whose close is compared against it. With shift 1 that bar's own
+//--- high was part of the channel, which made a breakout close all but
+//--- unreachable.
       double hi[], lo[];
       double swingHigh = 0.0, swingLow = 0.0;
-      if(CopyHigh(m_symbol, m_tf, 1, m_cfg.donchianPeriod, hi) == m_cfg.donchianPeriod &&
-         CopyLow(m_symbol, m_tf, 1, m_cfg.donchianPeriod, lo) == m_cfg.donchianPeriod)
+      int    dShift = MathMax(2, m_cfg.donchianShift);
+
+      if(CopyHigh(m_symbol, m_tf, dShift, m_cfg.donchianPeriod, hi) == m_cfg.donchianPeriod &&
+         CopyLow(m_symbol, m_tf, dShift, m_cfg.donchianPeriod, lo) == m_cfg.donchianPeriod)
         {
          swingHigh = hi[ArrayMaximum(hi)];
          swingLow  = lo[ArrayMinimum(lo)];
         }
+      else
+         m_lastIssue = StringFormat("Donchian: need %d bars from shift %d, have %d",
+                                    m_cfg.donchianPeriod, dShift, Bars(m_symbol, m_tf));
 
       double closeArr[];
       double close1 = 0.0;
       if(CopyClose(m_symbol, m_tf, 1, 1, closeArr) == 1)
          close1 = closeArr[0];
       else
-        { v = t; return false; }
+        {
+         m_lastIssue = StringFormat("close of bar 1 unavailable (error %d, %d bars)",
+                                    GetLastError(), Bars(m_symbol, m_tf));
+         v = t;
+         return false;
+        }
 
       //--- fill measured fields -------------------------------------
       t.atr           = atr;
@@ -436,9 +502,10 @@ public:
       t.bullExhaust = (rsi >= 68.0 && t.bbPercent >= 0.90 && t.macdSlope < 0.0);
       t.bearExhaust = (rsi <= 32.0 && t.bbPercent <= 0.10 && t.macdSlope > 0.0);
 
-      t.valid   = true;
-      m_view    = t;
-      m_viewBar = barTime;
+      t.valid     = true;
+      m_view      = t;
+      m_viewBar   = barTime;
+      m_lastIssue = "";
 
       v = t;
       return true;

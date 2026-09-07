@@ -313,7 +313,7 @@ Ya EA1 me `InpMinScore` `100` kar dein (koi entry nahi) aur EA2 me `InpMaxLevels
 | `needs a HEDGING account` | Account netting hai. Broker se hedging account lein |
 | Panel me koi EA `OFF` | Woh EA attach nahi hai, ya Algo Trading off hai |
 | Ek EA doosre ki positions nahi dekh raha | `InpMagicBase` chaaron me same nahi hai |
-| EA1 kabhi enter nahi karta | Panel ka `gate:` line dekhein — exact reason likha hota hai. `InpMinScore` ya `InpMinAdx` kam karein |
+| **EA1 order punch nahi kar raha** | **Panel ka block histogram dekhein** — `<== main` wala hi asli constraint hai. Details neeche [EA1 troubleshooting](#ea1-order-nahi-kar-raha-to) me |
 | EA2 grid add nahi kar raha | Panel ka `->` line dekhein. Aksar `pressure still too high` hota hai — yeh **intended** hai. `InpMaxPressureToAdd` badha ke jaldi add kara sakte hain |
 | EA3 kabhi fire nahi karta | Conviction gate strict hai. Panel reason dekhein; `InpMinScore` / `InpMinAdx` kam karein ya `InpRequireTrendRegime` off karein |
 | EA3 ka lot bahut bada | `InpRecoveryOverPrice` **badhayein** (`$10` → `$20`) |
@@ -322,6 +322,53 @@ Ya EA1 me `InpMinScore` `100` kar dein (koi entry nahi) aur EA2 me `InpMaxLevels
 | ECN pe target hit par net profit kam | Chaaron me `InpCommissionPerLot` set karein |
 
 Sab diagnostics MT5 ke **Toolbox → Experts** tab me hain.
+
+---
+
+## EA1 order nahi kar raha to
+
+Pehle **`InpDiagLogSeconds = 60`** set karein. Ab do jagah exact reason milega:
+
+**1. Panel pe histogram** — har blocked condition ka count aur percentage, aur dominant wale pe `<== main`:
+
+```
+why no entry (of 84213 checks)
+  score below floor           52104  61.9%  <== main
+  no pinpoint trigger         15832  18.8%
+  adx below floor             10673  12.7%
+  higher timeframes disagree    841   1.0%
+best seen: |score| 58.2 (floor 35.0), adx 31.4 (floor 18.0)
+```
+
+`best seen` line sabse kaam ki hai — agar aapka best `|score|` kabhi `35` tak nahi pahuncha, to floor aapke broker ke data ke liye unrealistic hai.
+
+**2. Experts log** me har 60 second pe live reading + blocks ka summary.
+
+### Agar histogram me `market view not ready` dominant hai
+
+Yeh sabse common cause hai aur gate se koi lena-dena nahi. Log me exact line milegi:
+
+```
+KM1 waiting on the market view: EMA on PERIOD_H1: CopyBuffer returned -1 (error 4806), 8412 bars on PERIOD_M1
+KM1 history available: PERIOD_M1 bars=8412 | PERIOD_M15 bars=520 | PERIOD_H1 bars=0
+```
+
+Matlab MT5 ne H1 history download nahi ki. Fix: **H1 aur M15 ka chart ek baar khol ke scroll karein** (history download ho jaayegi), phir EA1 reload karein. Ya `InpMtf2` ko `PERIOD_M30` kar dein.
+
+### Blocker ke hisaab se fix
+
+| `<== main` | Kya karein |
+|---|---|
+| `score below floor` | `InpMinScore` kam karein — `35` → `28`. `best seen` se guide lein |
+| `adx below floor` | `InpMinAdx` **aur** `InpAdxTrendLevel` **dono** kam karein (same value) |
+| `no pinpoint trigger` | `InpDonchianPeriod` `40` → `25`, ya `InpBreakoutAtrRatio` `1.15` → `1.05` |
+| `higher timeframes disagree` | `InpRequireMtfAgree = false`, ya `InpMtf2` ko `PERIOD_M30` |
+| `already holding / max reached` | Normal hai — `InpMaxPerDirection = 1` hai. `2`–`3` kar sakte hain |
+| `cooldown` | `InpCooldownSeconds` `300` → `120` |
+| `order send failed` | Log me broker retcode hoga — margin, volume ya trade-mode issue |
+| `market view not ready` | Upar dekhein |
+
+> **`InpAdxTrendLevel` ko `InpMinAdx` se upar na rakhein.** PULLBACK trigger ko `TREND` regime chahiye, aur regime `TREND` sirf `InpAdxTrendLevel` pe declare hoti hai. Agar woh `InpMinAdx` se upar hai, to beech ke gap me har pullback **silently** block hota rahega. EA1 `OnInit` me iska warning bhi print karta hai.
 
 ---
 

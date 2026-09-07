@@ -61,9 +61,10 @@ input int             InpMaxPerDirection  = 1;     // Max EA1 positions per dire
 input bool            InpAllowBoth        = true;  // May hold an EA1 buy and sell at the same time
 
 input group "=== Confluence gate ==="
-input double          InpMinScore         = 45.0;  // Conviction floor, 0..100
+input double          InpMinScore         = 35.0;  // Conviction floor, 0..100
 input bool            InpRequireMtfAgree  = true;  // Both higher timeframes must agree
-input double          InpMinAdx           = 20.0;  // Minimum ADX
+input double          InpMinAdx           = 18.0;  // Minimum ADX
+input double          InpAdxTrendLevel    = 18.0;  // ADX at which a TREND regime is declared
 input bool            InpSkipExtremeVol   = true;  // Skip the EXTREME volatility band
 input double          InpMaxSpreadPoints  = 60;    // Spread allowance (0 = off)
 
@@ -71,9 +72,13 @@ input group "=== Pinpoint triggers ==="
 input bool            InpUsePullback      = true;  // Pullback-to-EMA continuation
 input bool            InpUseBreakout      = true;  // Donchian breakout with expansion
 input bool            InpUseReversal      = true;  // Range exhaustion reversal
+input double          InpReversalStretch  = 35.0;  // Reversal: score must be stretched THIS far against
 input double          InpBreakoutAtrRatio = 1.15;  // Min ATR ratio for a breakout entry
 input int             InpCooldownSeconds  = 300;   // Min seconds between EA1 entries
 input bool            InpOneEntryPerBar   = true;  // At most one entry per bar
+
+input group "=== Diagnostics ==="
+input int             InpDiagLogSeconds   = 0;     // Log a gate summary every N seconds (0 = off)
 
 input group "=== Take profit (no stop loss is ever sent) ==="
 input ENUM_KM1_TPMODE InpTpMode           = KM1_TP_ATR; // TP mode
@@ -107,6 +112,55 @@ string     g_lastTrigger   = "-";
 string     g_lastBlock     = "-";
 int        g_entryCount    = 0;
 
+//--- Block histogram. "It is not trading" is useless on its own; what
+//--- matters is WHICH condition is the binding constraint on this broker's
+//--- data. These counters are shown on the panel and can be logged.
+#define KM1_B_NOTALLOWED 0
+#define KM1_B_SPREAD     1
+#define KM1_B_COOLDOWN   2
+#define KM1_B_SAMEBAR    3
+#define KM1_B_SCORE      4
+#define KM1_B_MTF        5
+#define KM1_B_ADX        6
+#define KM1_B_VOL        7
+#define KM1_B_TRIGGER    8
+#define KM1_B_EXPOSURE   9
+#define KM1_B_SENDFAIL   10
+#define KM1_B_WARMUP     11
+#define KM1_B_COUNT      12
+
+long   g_block[KM1_B_COUNT];
+long   g_evaluated  = 0;
+double g_scoreBest  = 0.0;   // best |score| seen, tells you if the floor is realistic
+double g_adxBest    = 0.0;
+
+string BlockName(const int i)
+  {
+   switch(i)
+     {
+      case KM1_B_NOTALLOWED: return "trading not allowed";
+      case KM1_B_SPREAD:     return "spread too wide";
+      case KM1_B_COOLDOWN:   return "cooldown";
+      case KM1_B_SAMEBAR:    return "already entered this bar";
+      case KM1_B_SCORE:      return "score below floor";
+      case KM1_B_MTF:        return "higher timeframes disagree";
+      case KM1_B_ADX:        return "adx below floor";
+      case KM1_B_VOL:        return "volatility extreme";
+      case KM1_B_TRIGGER:    return "no pinpoint trigger";
+      case KM1_B_EXPOSURE:   return "already holding / max reached";
+      case KM1_B_SENDFAIL:   return "order send failed";
+      case KM1_B_WARMUP:     return "market view not ready";
+     }
+   return "?";
+  }
+
+void Blocked(const int reason, const string detail)
+  {
+   if(reason >= 0 && reason < KM1_B_COUNT)
+      g_block[reason]++;
+   g_lastBlock = detail;
+  }
+
 //+------------------------------------------------------------------+
 int OnInit()
   {
@@ -137,7 +191,18 @@ int OnInit()
    cfg.rsiPeriod      = InpRsiPeriod;
    cfg.atrPeriod      = InpAtrPeriod;
    cfg.donchianPeriod = InpDonchianPeriod;
+   cfg.donchianShift  = 2;
+//--- The PULLBACK trigger requires a TREND regime, and the regime is only
+//--- declared TREND at cfg.adxTrendLevel. If that sat above InpMinAdx the
+//--- gate would pass ADX values that the regime then refused, silently
+//--- blocking every pullback in the gap. Keep them aligned.
+   cfg.adxTrendLevel  = InpAdxTrendLevel;
+   cfg.adxRangeLevel  = MathMax(5.0, InpAdxTrendLevel - 5.0);
    Sig.Config(cfg);
+
+   if(InpAdxTrendLevel > InpMinAdx)
+      PrintFormat("KM1 WARNING: InpAdxTrendLevel (%.1f) is above InpMinAdx (%.1f). "
+                  "Pullbacks cannot fire between them.", InpAdxTrendLevel, InpMinAdx);
 
    if(!Sig.Init(_Symbol, PERIOD_CURRENT))
      {
@@ -145,16 +210,24 @@ int OnInit()
       return(INIT_FAILED);
      }
 
+   ArrayInitialize(g_block, 0);
+
    PrintFormat("KM1 Entry v%s | %s %s | magic base %I64d -> buy %I64d / sell %I64d",
                KM_VERSION, _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()),
                InpMagicBase,
                KM_Magic(InpMagicBase, KM_EA_ENTRY, true),
                KM_Magic(InpMagicBase, KM_EA_ENTRY, false));
-   PrintFormat("KM1 gate: score>=%.0f mtf=%s adx>=%.0f | triggers pullback=%s breakout=%s reversal=%s",
-               InpMinScore, (InpRequireMtfAgree ? "yes" : "no"), InpMinAdx,
+   PrintFormat("KM1 continuation gate: score>=%.0f | mtf=%s | adx>=%.0f (regime trend at %.0f)",
+               InpMinScore, (InpRequireMtfAgree ? "required" : "off"),
+               InpMinAdx, InpAdxTrendLevel);
+   PrintFormat("KM1 triggers: pullback=%s breakout=%s reversal=%s (reversal needs score stretched %.0f against)",
                (InpUsePullback ? "on" : "off"), (InpUseBreakout ? "on" : "off"),
-               (InpUseReversal ? "on" : "off"));
+               (InpUseReversal ? "on" : "off"), InpReversalStretch);
    Print("KM1: orders are sent with TP and WITHOUT SL by design.");
+   if(InpDiagLogSeconds > 0)
+      PrintFormat("KM1: gate diagnostics will be logged every %d seconds.", InpDiagLogSeconds);
+   else
+      Print("KM1: set InpDiagLogSeconds (e.g. 60) to log why entries are being skipped.");
 
    return(INIT_SUCCEEDED);
   }
@@ -174,7 +247,19 @@ void OnTick()
    MarketView v;
    if(!Sig.Refresh(v) || !v.valid)
      {
-      g_lastBlock = "indicators warming up";
+      //--- This is the most common reason an EA looks dead: one indicator
+      //--- in the stack is not ready, usually a higher-timeframe EMA whose
+      //--- history the terminal has not downloaded yet. Say exactly which.
+      Blocked(KM1_B_WARMUP, "market view not ready -> " + Sig.LastIssue());
+
+      static datetime lastWarn = 0;
+      if(TimeCurrent() - lastWarn >= 30)
+        {
+         lastWarn = TimeCurrent();
+         Print("KM1 waiting on the market view: ", Sig.LastIssue());
+         Print("KM1 history available: ", Sig.WarmupReport());
+        }
+
       Panel(v);
       return;
      }
@@ -188,7 +273,40 @@ void OnTick()
    if(dir != KM_DIR_NONE)
       TryEnter(dir, v);
 
+   DiagLog(v);
    Panel(v);
+  }
+
+//+------------------------------------------------------------------+
+//| Periodic gate summary in the Experts log. Tells you which single  |
+//| condition is actually holding the EA back on live data.           |
+//+------------------------------------------------------------------+
+void DiagLog(const MarketView &v)
+  {
+   if(InpDiagLogSeconds <= 0)
+      return;
+
+   static datetime last = 0;
+   if(TimeCurrent() - last < InpDiagLogSeconds)
+      return;
+   last = TimeCurrent();
+
+   PrintFormat("KM1 DIAG | now: score %+.1f adx %.1f regime %s vol %s (atr x%.2f) mtf %s%s%s",
+               v.score, v.trendStrength, KM_RegimeName(v.regime),
+               KM_VolName(v.volState), v.atrRatio,
+               (v.mtfAgree ? "agree" : "split"),
+               (v.bullExhaust ? " BULL-EXH" : ""),
+               (v.bearExhaust ? " BEAR-EXH" : ""));
+   PrintFormat("KM1 DIAG | best seen: |score| %.1f, adx %.1f | your floors: score %.1f, adx %.1f",
+               g_scoreBest, g_adxBest, InpMinScore, InpMinAdx);
+
+   string line = "";
+   for(int i = 0; i < KM1_B_COUNT; i++)
+      if(g_block[i] > 0)
+         line += StringFormat("%s=%I64d  ", BlockName(i), g_block[i]);
+
+   PrintFormat("KM1 DIAG | %d entries in %I64d evaluations. Blocks: %s",
+               g_entryCount, g_evaluated, (line == "" ? "none" : line));
   }
 
 //+------------------------------------------------------------------+
@@ -197,20 +315,25 @@ void OnTick()
 //+------------------------------------------------------------------+
 ENUM_KM_DIR Decide(const MarketView &v)
   {
-   g_lastBlock = "-";
+   g_evaluated++;
+   if(MathAbs(v.score) > g_scoreBest)
+      g_scoreBest = MathAbs(v.score);
+   if(v.trendStrength > g_adxBest)
+      g_adxBest = v.trendStrength;
 
 //--- tradability ---------------------------------------------------
    if(!TerminalInfoInteger(TERMINAL_CONNECTED) ||
       !MQLInfoInteger(MQL_TRADE_ALLOWED)       ||
       !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
      {
-      g_lastBlock = "trading not allowed";
+      Blocked(KM1_B_NOTALLOWED, "trading not allowed (check the Algo Trading button)");
       return KM_DIR_NONE;
      }
 
    if(InpMaxSpreadPoints > 0.0 && KM_SpreadPoints(_Symbol) > InpMaxSpreadPoints)
      {
-      g_lastBlock = StringFormat("spread %.0f > %.0f", KM_SpreadPoints(_Symbol), InpMaxSpreadPoints);
+      Blocked(KM1_B_SPREAD, StringFormat("spread %.0f > %.0f",
+                                         KM_SpreadPoints(_Symbol), InpMaxSpreadPoints));
       return KM_DIR_NONE;
      }
 
@@ -218,63 +341,100 @@ ENUM_KM_DIR Decide(const MarketView &v)
    if(InpCooldownSeconds > 0 && g_lastEntryTime > 0 &&
       (TimeCurrent() - g_lastEntryTime) < InpCooldownSeconds)
      {
-      g_lastBlock = StringFormat("cooldown %ds left",
-                                 InpCooldownSeconds - (int)(TimeCurrent() - g_lastEntryTime));
+      Blocked(KM1_B_COOLDOWN, StringFormat("cooldown, %ds left",
+                                           InpCooldownSeconds - (int)(TimeCurrent() - g_lastEntryTime)));
       return KM_DIR_NONE;
      }
 
    datetime curBar = (datetime)SeriesInfoInteger(_Symbol, PERIOD_CURRENT, SERIES_LASTBAR_DATE);
    if(InpOneEntryPerBar && curBar == g_lastEntryBar)
      {
-      g_lastBlock = "already entered this bar";
+      Blocked(KM1_B_SAMEBAR, "already entered on this bar");
       return KM_DIR_NONE;
      }
 
-//--- 1. conviction -------------------------------------------------
-   ENUM_KM_DIR bias = Sig.Bias(v, InpMinScore);
-   if(bias == KM_DIR_NONE)
+//--- Two independent cases, and they need OPPOSITE readings.
+//---
+//---   continuation  score points the way we want to trade
+//---   reversal      score points AGAINST us, stretched to an extreme,
+//---                 with momentum already turning back
+//---
+//--- The original build demanded a positive score for a buy AND a
+//--- bearExhaust flag on the same bar. bearExhaust requires RSI <= 32,
+//--- which on its own subtracts about 11 points from the score while the
+//--- band, stochastic and EMA terms subtract more. The two conditions are
+//--- arithmetically incompatible, so the reversal trigger could never
+//--- fire. It is judged on its own terms now.
+   ENUM_KM_DIR contBias = Sig.Bias(v, InpMinScore);
+   ENUM_KM_DIR revBias  = KM_DIR_NONE;
+
+   if(InpUseReversal)
      {
-      g_lastBlock = StringFormat("score %.0f below %.0f", v.score, InpMinScore);
-      return KM_DIR_NONE;
+      if(v.bearExhaust && v.score <= -InpReversalStretch)
+         revBias = KM_DIR_BUY;      // stretched down and turning: buy it
+      else if(v.bullExhaust && v.score >= InpReversalStretch)
+         revBias = KM_DIR_SELL;     // stretched up and turning: sell it
      }
 
-//--- 2. higher timeframe agreement ---------------------------------
-   if(InpRequireMtfAgree && !v.mtfAgree)
+   if(contBias == KM_DIR_NONE && revBias == KM_DIR_NONE)
      {
-      g_lastBlock = "higher timeframes disagree";
+      Blocked(KM1_B_SCORE, StringFormat("score %+.0f, needs %+.0f (or %+.0f stretched for a reversal)",
+                                        v.score, InpMinScore, InpReversalStretch));
       return KM_DIR_NONE;
      }
 
-//--- 3. trend strength --------------------------------------------
-   if(v.trendStrength < InpMinAdx)
+//--- EXHAUSTION TAKES PRECEDENCE.
+//---
+//--- By the time a score is stretched far enough to raise an exhaustion
+//--- flag it is also well past the continuation floor, so if continuation
+//--- were checked first it would win every tie and the reversal case would
+//--- stay unreachable. Precedence is not just a tie-break here: a market
+//--- that is stretched to a band extreme with momentum already turning is
+//--- exactly where a continuation entry is the wrong trade.
+   bool isReversal = (revBias != KM_DIR_NONE);
+   ENUM_KM_DIR dir = (isReversal ? revBias : contBias);
+
+//--- MTF agreement applies to continuation only. A reversal is
+//--- counter-trend by definition, so demanding agreement would kill it.
+   if(!isReversal && InpRequireMtfAgree && !v.mtfAgree)
      {
-      g_lastBlock = StringFormat("adx %.1f < %.1f", v.trendStrength, InpMinAdx);
+      Blocked(KM1_B_MTF, "higher timeframes disagree");
       return KM_DIR_NONE;
      }
 
-//--- 4. volatility ------------------------------------------------
+//--- Trend strength applies to continuation only, for the same reason.
+   if(!isReversal && v.trendStrength < InpMinAdx)
+     {
+      Blocked(KM1_B_ADX, StringFormat("adx %.1f < %.1f", v.trendStrength, InpMinAdx));
+      return KM_DIR_NONE;
+     }
+
    if(InpSkipExtremeVol && v.volState == KM_VOL_EXTREME)
      {
-      g_lastBlock = StringFormat("volatility EXTREME (atr x%.2f)", v.atrRatio);
+      Blocked(KM1_B_VOL, StringFormat("volatility EXTREME (atr x%.2f)", v.atrRatio));
       return KM_DIR_NONE;
      }
 
-//--- 5. pinpoint trigger -----------------------------------------
+//--- pinpoint trigger --------------------------------------------
    string trig = "";
-   if(!Trigger(v, bias, trig))
+   if(isReversal)
+      trig = "REVERSAL";
+   else if(!Trigger(v, dir, trig))
      {
-      g_lastBlock = "no pinpoint trigger";
+      Blocked(KM1_B_TRIGGER, StringFormat("no trigger (regime %s, score %+.0f)",
+                                          KM_RegimeName(v.regime), v.score));
       return KM_DIR_NONE;
      }
 
-//--- 6. exposure ------------------------------------------------
-   bool isBuy = (bias == KM_DIR_BUY);
+//--- exposure ---------------------------------------------------
+   bool isBuy = (dir == KM_DIR_BUY);
 
    KMAgg mine;
    Book.AggSlot(KM_EA_ENTRY, isBuy, mine);
    if(InpMaxPerDirection > 0 && mine.count >= InpMaxPerDirection)
      {
-      g_lastBlock = StringFormat("EA1 already holds %d on that side", mine.count);
+      Blocked(KM1_B_EXPOSURE, StringFormat("EA1 already holds %d %s position(s)",
+                                           mine.count, (isBuy ? "buy" : "sell")));
       return KM_DIR_NONE;
      }
 
@@ -284,13 +444,13 @@ ENUM_KM_DIR Decide(const MarketView &v)
       Book.AggSlot(KM_EA_ENTRY, !isBuy, other);
       if(other.count > 0)
         {
-         g_lastBlock = "opposite EA1 position open";
+         Blocked(KM1_B_EXPOSURE, "opposite EA1 position is open");
          return KM_DIR_NONE;
         }
      }
 
    g_lastTrigger = trig;
-   return bias;
+   return dir;
   }
 
 //+------------------------------------------------------------------+
@@ -350,20 +510,9 @@ bool Trigger(const MarketView &v, const ENUM_KM_DIR dir, string &which)
         }
      }
 
-//--- REVERSAL: range regime, stretched to a band edge, momentum turning
-   if(InpUseReversal && v.regime == KM_REGIME_RANGE)
-     {
-      if(isBuy && v.bearExhaust)
-        {
-         which = "REVERSAL";
-         return true;
-        }
-      if(!isBuy && v.bullExhaust)
-        {
-         which = "REVERSAL";
-         return true;
-        }
-     }
+//--- REVERSAL is NOT handled here. It needs a score pointing the other
+//--- way, so it cannot share this function's continuation direction and
+//--- is decided in Decide() instead.
 
    return false;
   }
@@ -410,7 +559,7 @@ void TryEnter(const ENUM_KM_DIR dir, const MarketView &v)
    ulong ticket = 0;
    if(!Exec.Open(isBuy, InpLot, magic, tp, note, ticket))
      {
-      g_lastBlock = Exec.LastError();
+      Blocked(KM1_B_SENDFAIL, "order send failed -> " + Exec.LastError());
       return;
      }
 
@@ -467,6 +616,31 @@ void Panel(const MarketView &v)
    t += StringFormat("EA1 sell %d pos %.2f lots  %.2f %s\n", s.count, s.lots, s.profit, cur);
    t += StringFormat("entries taken: %d   last trigger: %s\n", g_entryCount, g_lastTrigger);
    t += "gate: " + g_lastBlock + "\n";
+
+//--- the histogram: which condition is the binding constraint
+   t += "-----------------------------------\n";
+   t += StringFormat("why no entry (of %I64d checks)\n", g_evaluated);
+
+   long worst = 0;
+   int  worstIdx = -1;
+   for(int i = 0; i < KM1_B_COUNT; i++)
+      if(g_block[i] > worst)
+        {
+         worst = g_block[i];
+         worstIdx = i;
+        }
+
+   for(int i = 0; i < KM1_B_COUNT; i++)
+     {
+      if(g_block[i] <= 0)
+         continue;
+      double pct = (g_evaluated > 0 ? 100.0 * (double)g_block[i] / (double)g_evaluated : 0.0);
+      t += StringFormat("  %-26s %6I64d  %4.1f%%%s\n",
+                        BlockName(i), g_block[i], pct, (i == worstIdx ? "  <== main" : ""));
+     }
+
+   t += StringFormat("best seen: |score| %.1f (floor %.1f), adx %.1f (floor %.1f)\n",
+                     g_scoreBest, InpMinScore, g_adxBest, InpMinAdx);
    t += "no stop loss is used - EA2/3/4 manage adverse moves\n";
 
    Comment(t);

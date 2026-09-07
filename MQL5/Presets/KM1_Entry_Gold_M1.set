@@ -1,5 +1,13 @@
 ; KrishMix EA1 - Pinpoint Entry | XAUUSD M1
-; Selective by design: a handful of entries per session, not constant trading.
+;
+; If EA1 is not entering, set InpDiagLogSeconds=60 and read Toolbox > Experts.
+; The panel also shows a histogram of which condition is blocking, with the
+; dominant one marked "<== main". Tune that one, not everything at once.
+;
+; InpAdxTrendLevel MUST NOT be above InpMinAdx. The PULLBACK trigger needs a
+; TREND regime, and the regime is only declared TREND at InpAdxTrendLevel, so
+; a higher value silently blocks every pullback in the gap between them.
+;
 ; KEEP InpMagicBase IDENTICAL IN ALL FOUR EAs.
 InpMagicBase=51000
 InpCommissionPerLot=0.0
@@ -7,17 +15,20 @@ InpSlippagePoints=30
 InpLot=0.01
 InpMaxPerDirection=1
 InpAllowBoth=true
-InpMinScore=45.0
+InpMinScore=35.0
 InpRequireMtfAgree=true
-InpMinAdx=20.0
+InpMinAdx=18.0
+InpAdxTrendLevel=18.0
 InpSkipExtremeVol=true
 InpMaxSpreadPoints=60
 InpUsePullback=true
 InpUseBreakout=true
 InpUseReversal=true
+InpReversalStretch=35.0
 InpBreakoutAtrRatio=1.15
 InpCooldownSeconds=300
 InpOneEntryPerBar=true
+InpDiagLogSeconds=60
 InpTpMode=0
 InpTpAtrMult=1.8
 InpTpPrice=3.0
