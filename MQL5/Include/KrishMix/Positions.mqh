@@ -326,6 +326,53 @@ public:
       return false;
      }
 
+   //--- has EA2 started averaging this side yet? Until it has, the entry
+   //--- is still a plain single trade riding its own take profit and the
+   //--- basket manager has no business closing it.
+   bool              GridOpen(const bool isBuy) const
+     {
+      for(int i = 0; i < m_n; i++)
+         if(m_legs[i].slot == KM_EA_GRID && m_legs[i].isBuy == isBuy)
+            return true;
+      return false;
+     }
+
+   bool              AnyGridLegs(void) const
+     {
+      for(int i = 0; i < m_n; i++)
+         if(m_legs[i].slot == KM_EA_GRID)
+            return true;
+      return false;
+     }
+
+   //--- legs on one side that still carry a broker-side take profit
+   int               CountWithTP(const bool isBuy) const
+     {
+      int k = 0;
+      for(int i = 0; i < m_n; i++)
+         if(m_legs[i].isBuy == isBuy && m_legs[i].tp != 0.0)
+            k++;
+      return k;
+     }
+
+   int               CountWithTPAll(void) const
+     {
+      int k = 0;
+      for(int i = 0; i < m_n; i++)
+         if(m_legs[i].tp != 0.0)
+            k++;
+      return k;
+     }
+
+   int               CountSlot(const int slot, const bool isBuy) const
+     {
+      int k = 0;
+      for(int i = 0; i < m_n; i++)
+         if(m_legs[i].slot == slot && m_legs[i].isBuy == isBuy)
+            k++;
+      return k;
+     }
+
    //--- how far price has run against a basket, in price units
    double            AdverseExcursion(const bool isBuy, const double bid, const double ask) const
      {

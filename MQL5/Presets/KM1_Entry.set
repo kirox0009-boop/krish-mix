@@ -1,0 +1,94 @@
+; KrishMix EA1 - Pinpoint Entry  |  attach per traded symbol
+;
+; Six independent ways to qualify for an entry. Turn the four add-on layers
+; off and this is byte-for-byte the previous behaviour.
+;   PULLBACK / BREAKOUT / REVERSAL   score driven, the original triggers
+;   INSIDEBAR                        M30 swing-extreme inside-bar break, 1:3
+;   FIBREV                           trend-based fib projection reached
+;   PLAYBOOK                         the five-step top-down edge
+;
+; Orders carry a take profit and NEVER a stop loss. EA2/EA3/EA4 own what
+; happens when price goes the other way.
+;
+; If it is not entering: InpDiagLogSeconds is already on, and the panel shows
+; a histogram of every block reason with the dominant one marked "<== main".
+; Tune that one condition, not everything at once.
+;
+; InpAdxTrendLevel MUST NOT exceed InpMinAdx, or every PULLBACK in the gap is
+; silently refused. OnInit warns if you set it higher.
+;
+; InpFibTolerAtr 0.50 puts price "at" a projection fairly often. Tighten it to
+; 0.25-0.35 if FIBREV produces more entries than you want.
+;
+; KEEP InpMagicBase IDENTICAL IN EVERY KrishMix EA.
+InpMagicBase=51000
+InpCommissionPerLot=0
+InpSlippagePoints=30
+InpLot=0.01
+InpMaxPerDirection=1
+InpAllowBoth=true
+InpMinScore=35
+InpRequireMtfAgree=true
+InpMinAdx=18
+InpAdxTrendLevel=18
+InpSkipExtremeVol=true
+InpMaxSpreadPoints=60
+InpUsePullback=true
+InpUseBreakout=true
+InpUseReversal=true
+InpReversalStretch=35
+InpBreakoutAtrRatio=1.15
+InpCooldownSeconds=300
+InpOneEntryPerBar=true
+InpDiagLogSeconds=0
+InpTpMode=0
+InpTpAtrMult=1.8
+InpTpPrice=3
+InpTpMoney=2
+InpEmaFast=8
+InpEmaSlow=21
+InpEmaFilter=50
+InpMtf1=15
+InpMtf2=16385
+InpAdxPeriod=14
+InpRsiPeriod=14
+InpAtrPeriod=14
+InpDonchianPeriod=40
+InpUseInsideBar=true
+InpIbTimeframe=30
+InpIbSellAtHigh=true
+InpIbBuyAtLow=true
+InpIbRewardRatio=3
+InpIbRiskFromMother=true
+InpIbMotherMinAtr=0.8
+InpIbBabyMaxFrac=0.55
+InpIbMaxAgeBars=6
+InpIbExtremeLookback=12
+InpUseFibRev=true
+InpFibR1=0.618
+InpFibR2=1
+InpFibR3=1.618
+InpFibMinImpulseAtr=2
+InpFibMinRetracePct=20
+InpFibMaxRetracePct=90
+InpFibTolerAtr=0.5
+InpFibRewardRatio=3
+InpUsePlaybook=true
+InpPbHighTf=16388
+InpPbMidTf=15
+InpPbLowTf=5
+InpPbMinConfidence=55
+InpPbRequireHtfAlign=false
+InpPbMaPeriod=50
+InpPbVwapMinSd=1.2
+InpPbUseBusStyle=true
+InpFreshTrendOnly=true
+InpFreshMaturityMax=40
+InpFreshCornerAtr=3
+InpFreshMinRetrace=50
+InpFreshFlipBars=25
+InpFreshMaxLegs=5
+InpFreshMaxExtAtr=12
+InpSwingStrength=3
+InpShowPanel=true
+InpShowNarrative=true

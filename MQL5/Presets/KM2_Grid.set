@@ -1,0 +1,49 @@
+; KrishMix EA2 - Grid Brain  |  attach per traded symbol
+;
+; Decides whether to average AT ALL, at what distance, and with what lot.
+; It refuses to add while the market is still pushing hard against the basket
+; and waits for the push to cool or for an exhaustion flag.
+;
+; Additive lots 0.01 / 0.02 / 0.03 ... Multiply mode exists but additive is
+; the default because 0.01 x 1.25 rounds straight back to 0.01 on most brokers.
+;
+; Exposure caps are OFF (0 = unlimited) as requested - EA3 and EA4 answer
+; drawdown, not a hard stop on gridding.
+;
+; KEEP InpMagicBase IDENTICAL IN EVERY KrishMix EA.
+InpMagicBase=51000
+InpCommissionPerLot=0
+InpSlippagePoints=30
+InpBaseLot=0.01
+InpLotMode=1
+InpLotIncrement=0.01
+InpLotMultiplier=1.25
+InpMaxLotPerAdd=1
+InpCautiousLotScale=0.5
+InpAtrStepMult=1.2
+InpMinStepPrice=1
+InpTrendWidenMult=1.8
+InpExhaustTighten=0.75
+InpHighVolWiden=1.3
+InpExtremeVolWiden=1.8
+InpLevelWiden=1.08
+InpMaxPressureToAdd=55
+InpWaitOnExtremeVol=true
+InpWaitOnBreakout=true
+InpRequireBarClose=true
+InpMinSecondsBetween=45
+InpOnlyLosingSide=true
+InpMaxLevels=0
+InpMaxLotsPerSide=0
+InpSetTpOnGridLegs=false
+InpGridTpAtrMult=2.5
+InpEmaFast=8
+InpEmaSlow=21
+InpEmaFilter=50
+InpMtf1=15
+InpMtf2=16385
+InpAdxPeriod=14
+InpAtrPeriod=14
+InpDonchianPeriod=40
+InpCrossCheckEA1=false
+InpShowPanel=true

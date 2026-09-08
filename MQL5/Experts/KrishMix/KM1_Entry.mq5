@@ -40,6 +40,11 @@
 #include <KrishMix\Signals.mqh>
 #include <KrishMix\Positions.mqh>
 #include <KrishMix\Execution.mqh>
+//--- add-on strategy layers. Everything above keeps working exactly as
+//--- before; these only ever ADD ways to qualify for an entry.
+#include <KrishMix\Structure.mqh>
+#include <KrishMix\Fib.mqh>
+#include <KrishMix\Playbook.mqh>
 
 //+------------------------------------------------------------------+
 enum ENUM_KM1_TPMODE
@@ -61,9 +66,10 @@ input int             InpMaxPerDirection  = 1;     // Max EA1 positions per dire
 input bool            InpAllowBoth        = true;  // May hold an EA1 buy and sell at the same time
 
 input group "=== Confluence gate ==="
-input double          InpMinScore         = 45.0;  // Conviction floor, 0..100
+input double          InpMinScore         = 35.0;  // Conviction floor, 0..100
 input bool            InpRequireMtfAgree  = true;  // Both higher timeframes must agree
-input double          InpMinAdx           = 20.0;  // Minimum ADX
+input double          InpMinAdx           = 18.0;  // Minimum ADX
+input double          InpAdxTrendLevel    = 18.0;  // ADX at which a TREND regime is declared
 input bool            InpSkipExtremeVol   = true;  // Skip the EXTREME volatility band
 input double          InpMaxSpreadPoints  = 60;    // Spread allowance (0 = off)
 
@@ -71,9 +77,13 @@ input group "=== Pinpoint triggers ==="
 input bool            InpUsePullback      = true;  // Pullback-to-EMA continuation
 input bool            InpUseBreakout      = true;  // Donchian breakout with expansion
 input bool            InpUseReversal      = true;  // Range exhaustion reversal
+input double          InpReversalStretch  = 35.0;  // Reversal: score must be stretched THIS far against
 input double          InpBreakoutAtrRatio = 1.15;  // Min ATR ratio for a breakout entry
 input int             InpCooldownSeconds  = 300;   // Min seconds between EA1 entries
 input bool            InpOneEntryPerBar   = true;  // At most one entry per bar
+
+input group "=== Diagnostics ==="
+input int             InpDiagLogSeconds   = 0;     // Log a gate summary every N seconds (0 = off)
 
 input group "=== Take profit (no stop loss is ever sent) ==="
 input ENUM_KM1_TPMODE InpTpMode           = KM1_TP_ATR; // TP mode
@@ -92,8 +102,80 @@ input int             InpRsiPeriod        = 14;    // RSI period
 input int             InpAtrPeriod        = 14;    // ATR period
 input int             InpDonchianPeriod   = 40;    // Donchian lookback
 
+//===================================================================
+//  ADD-ON STRATEGY LAYERS
+//
+//  Each block below is an EXTRA way to qualify for an entry. Turning
+//  them all off returns the EA to exactly its previous behaviour.
+//
+//  They deliberately do NOT go through the composite score floor. The
+//  score measures trend-following conviction, so gating a structural
+//  or mean-reversion setup behind it is what made the original
+//  REVERSAL trigger unreachable. Each layer states its own case.
+//===================================================================
+
+input group "=== ADD-ON: inside bar at a swing extreme ==="
+//--- The M30 gold setup: price prints a fresh swing high, that bar is a
+//--- big candle, the next one is a baby candle inside it, and the entry
+//--- is the break of the baby's low. Sell side by default, buy side is
+//--- the mirror at a fresh swing low. Reward is 1:3, and there is no
+//--- stop loss - if it goes the other way EA2/EA3/EA4 take over.
+input bool            InpUseInsideBar     = true;  // Enable the inside-bar break
+input ENUM_TIMEFRAMES InpIbTimeframe      = PERIOD_M30; // Timeframe it is read on
+input bool            InpIbSellAtHigh     = true;  // Sell the baby-low break at a fresh high
+input bool            InpIbBuyAtLow       = true;  // Buy the baby-high break at a fresh low
+input double          InpIbRewardRatio    = 3.0;   // Reward per 1 unit of implied risk
+input bool            InpIbRiskFromMother = true;  // Implied risk = mother extreme (else baby)
+input double          InpIbMotherMinAtr   = 0.80;  // Mother candle must be at least this many ATR
+input double          InpIbBabyMaxFrac    = 0.55;  // Baby range as a fraction of the mother
+input int             InpIbMaxAgeBars     = 6;     // Ignore an inside bar older than this
+input int             InpIbExtremeLookback= 12;    // Bars the mother must be the extreme of
+
+input group "=== ADD-ON: trend-based Fibonacci reversal ==="
+//--- Three-point extension, not a retracement. A->B is the impulse, C
+//--- ends the pullback, and the three projections from C are where the
+//--- next leg tends to terminate. Price reaching one is the signal, and
+//--- the trade runs against the impulse.
+input bool            InpUseFibRev        = true;  // Enable fib reversal levels
+input double          InpFibR1            = 0.618; // Projection 1
+input double          InpFibR2            = 1.000; // Projection 2
+input double          InpFibR3            = 1.618; // Projection 3
+input double          InpFibMinImpulseAtr = 2.0;   // Ignore impulses smaller than this
+input double          InpFibMinRetracePct = 20.0;  // C must retrace at least this much
+input double          InpFibMaxRetracePct = 90.0;  // ... and no more than this
+input double          InpFibTolerAtr      = 0.50;  // How close to a level counts as "at" it
+input double          InpFibRewardRatio   = 3.0;   // Reward per 1 unit of implied risk
+
+input group "=== ADD-ON: top-down playbook ==="
+//--- Five steps: higher-timeframe bias, mid-timeframe levels and
+//--- trendline, low-timeframe VWAP / MA / RSI divergence / patterns,
+//--- then a NAMED edge, then the working timeframe from EA6.
+input bool            InpUsePlaybook      = true;  // Enable the playbook edge
+input ENUM_TIMEFRAMES InpPbHighTf         = PERIOD_H4;  // Step 1 timeframe
+input ENUM_TIMEFRAMES InpPbMidTf          = PERIOD_M15; // Step 2 timeframe
+input ENUM_TIMEFRAMES InpPbLowTf          = PERIOD_M5;  // Step 3 timeframe
+input double          InpPbMinConfidence  = 55.0;  // Minimum edge confidence
+input bool            InpPbRequireHtfAlign= false; // Hard-block trades against the HTF bias
+input int             InpPbMaPeriod       = 50;    // Moving average on the low timeframe
+input double          InpPbVwapMinSd      = 1.20;  // VWAP stretch that counts as a band edge
+input bool            InpPbUseBusStyle    = true;  // Take the style/timeframe from EA6
+
+input group "=== ADD-ON: fresh trend only (never join mid-trend) ==="
+//--- Entries are taken from the corner of a move, not its middle. A
+//--- counter-trend setup is exempt by definition, and a deep pullback
+//--- inside an older trend re-creates a corner.
+input bool            InpFreshTrendOnly   = true;  // Refuse mid-trend entries
+input double          InpFreshMaturityMax = 40.0;  // Maturity at or below this is fresh
+input double          InpFreshCornerAtr   = 3.0;   // Still a corner within this many ATR of the origin
+input double          InpFreshMinRetrace  = 50.0;  // Pullback depth that re-opens a corner
+input int             InpFreshFlipBars    = 25;    // A structure flip this recent counts as fresh
+input int             InpFreshMaxLegs     = 5;     // Legs counted as fully mature
+input double          InpFreshMaxExtAtr   = 12.0;  // Extension counted as fully mature
+input int             InpSwingStrength    = 3;     // Pivot bars required each side
+
 input group "=== Display ==="
 input bool            InpShowPanel        = true;  // On-chart panel
+input bool            InpShowNarrative    = true;  // Show the playbook's five-step reasoning
 
 //+------------------------------------------------------------------+
 CKMBus     Bus;
@@ -101,11 +183,142 @@ CKMSignals Sig;
 CKMBook    Book;
 CKMExec    Exec;
 
+//--- add-on layers
+CKMStructure StructEntry;   // on the chart timeframe: fresh-trend gate + fib pivots
+CKMStructure StructSwing;   // on InpIbTimeframe: the inside-bar setup
+CKMFib       Fib;
+CKMPlaybook  Play;
+
+int        g_hAtrSwing     = INVALID_HANDLE;  // ATR on the inside-bar timeframe
+bool       g_structOk      = false;
+bool       g_swingOk       = false;
+bool       g_playOk        = false;
+
 datetime   g_lastEntryTime = 0;
 datetime   g_lastEntryBar  = 0;
 string     g_lastTrigger   = "-";
 string     g_lastBlock     = "-";
 int        g_entryCount    = 0;
+
+//--- how many entries each trigger has produced, so it is obvious which
+//--- layer is actually contributing and which is dead weight
+#define KM1_T_PULLBACK  0
+#define KM1_T_BREAKOUT  1
+#define KM1_T_REVERSAL  2
+#define KM1_T_INSIDEBAR 3
+#define KM1_T_FIBREV    4
+#define KM1_T_PLAYBOOK  5
+#define KM1_T_COUNT     6
+
+long   g_trigCount[KM1_T_COUNT];
+long   g_trigFired[KM1_T_COUNT];   // qualified, before the shared gates
+
+string TriggerName(const int i)
+  {
+   switch(i)
+     {
+      case KM1_T_PULLBACK:  return "PULLBACK";
+      case KM1_T_BREAKOUT:  return "BREAKOUT";
+      case KM1_T_REVERSAL:  return "REVERSAL";
+      case KM1_T_INSIDEBAR: return "INSIDEBAR";
+      case KM1_T_FIBREV:    return "FIBREV";
+      case KM1_T_PLAYBOOK:  return "PLAYBOOK";
+     }
+   return "?";
+  }
+
+int TriggerIndex(const string name)
+  {
+   for(int i = 0; i < KM1_T_COUNT; i++)
+      if(TriggerName(i) == name)
+         return i;
+   return -1;
+  }
+
+//+------------------------------------------------------------------+
+//| One qualified entry idea.                                        |
+//|                                                                  |
+//| 'isCounter' marks a setup that is counter-trend by nature. Those   |
+//| skip the MTF-agreement and ADX floors, which exist to keep         |
+//| CONTINUATION entries honest and would otherwise make a             |
+//| mean-reversion setup impossible to reach.                          |
+//|                                                                  |
+//| 'tpPrice' lets a layer carry its own target, which is how the      |
+//| inside-bar 1:3 and the fib projection get their real levels        |
+//| instead of the generic ATR distance.                               |
+//+------------------------------------------------------------------+
+struct EntryCandidate
+  {
+   bool             ok;
+   ENUM_KM_DIR      dir;
+   string           trigger;
+   bool             isCounter;
+   double           tpPrice;    // 0 = fall back to the normal TP mode
+   string           note;
+  };
+
+void ResetCandidate(EntryCandidate &c)
+  {
+   c.ok        = false;
+   c.dir       = KM_DIR_NONE;
+   c.trigger   = "";
+   c.isCounter = false;
+   c.tpPrice   = 0.0;
+   c.note      = "";
+  }
+
+//--- Block histogram. "It is not trading" is useless on its own; what
+//--- matters is WHICH condition is the binding constraint on this broker's
+//--- data. These counters are shown on the panel and can be logged.
+#define KM1_B_NOTALLOWED 0
+#define KM1_B_SPREAD     1
+#define KM1_B_COOLDOWN   2
+#define KM1_B_SAMEBAR    3
+#define KM1_B_SCORE      4
+#define KM1_B_MTF        5
+#define KM1_B_ADX        6
+#define KM1_B_VOL        7
+#define KM1_B_TRIGGER    8
+#define KM1_B_EXPOSURE   9
+#define KM1_B_SENDFAIL   10
+#define KM1_B_WARMUP     11
+#define KM1_B_MIDTREND   12
+#define KM1_B_STRUCT     13
+#define KM1_B_COUNT      14
+
+long   g_block[KM1_B_COUNT];
+long   g_evaluated  = 0;
+double g_scoreBest  = 0.0;   // best |score| seen, tells you if the floor is realistic
+double g_adxBest    = 0.0;
+
+string BlockName(const int i)
+  {
+   switch(i)
+     {
+      case KM1_B_NOTALLOWED: return "trading not allowed";
+      case KM1_B_SPREAD:     return "spread too wide";
+      case KM1_B_COOLDOWN:   return "cooldown";
+      case KM1_B_SAMEBAR:    return "already entered this bar";
+      case KM1_B_SCORE:      return "score below floor";
+      case KM1_B_MTF:        return "higher timeframes disagree";
+      case KM1_B_ADX:        return "adx below floor";
+      case KM1_B_VOL:        return "volatility extreme";
+      case KM1_B_TRIGGER:    return "no pinpoint trigger";
+      case KM1_B_EXPOSURE:   return "already holding / max reached";
+      case KM1_B_SENDFAIL:   return "order send failed";
+      case KM1_B_WARMUP:     return "market view not ready";
+      case KM1_B_MIDTREND:   return "mid-trend, not a corner";
+      case KM1_B_STRUCT:     return "structure not ready";
+     }
+   return "?";
+  }
+
+void Blocked(const int reason, const string detail)
+  {
+   if(reason >= 0 && reason < KM1_B_COUNT)
+      g_block[reason]++;
+   g_lastBlock = detail;
+  }
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -137,7 +350,18 @@ int OnInit()
    cfg.rsiPeriod      = InpRsiPeriod;
    cfg.atrPeriod      = InpAtrPeriod;
    cfg.donchianPeriod = InpDonchianPeriod;
+   cfg.donchianShift  = 2;
+//--- The PULLBACK trigger requires a TREND regime, and the regime is only
+//--- declared TREND at cfg.adxTrendLevel. If that sat above InpMinAdx the
+//--- gate would pass ADX values that the regime then refused, silently
+//--- blocking every pullback in the gap. Keep them aligned.
+   cfg.adxTrendLevel  = InpAdxTrendLevel;
+   cfg.adxRangeLevel  = MathMax(5.0, InpAdxTrendLevel - 5.0);
    Sig.Config(cfg);
+
+   if(InpAdxTrendLevel > InpMinAdx)
+      PrintFormat("KM1 WARNING: InpAdxTrendLevel (%.1f) is above InpMinAdx (%.1f). "
+                  "Pullbacks cannot fire between them.", InpAdxTrendLevel, InpMinAdx);
 
    if(!Sig.Init(_Symbol, PERIOD_CURRENT))
      {
@@ -145,16 +369,103 @@ int OnInit()
       return(INIT_FAILED);
      }
 
+   ArrayInitialize(g_block, 0);
+   ArrayInitialize(g_trigCount, 0);
+   ArrayInitialize(g_trigFired, 0);
+
+//=== add-on layers ===============================================
+//--- A failure to start any of these is NOT fatal: the EA keeps running
+//--- on its original triggers and simply reports the layer as offline.
+
+//--- structure on the chart timeframe: fresh-trend gate and fib pivots
+   StructureConfig sc;
+   KM_DefaultStructureConfig(sc);
+   sc.swingStrength   = MathMax(1, InpSwingStrength);
+   sc.freshMaturity   = InpFreshMaturityMax;
+   sc.cornerAtr       = InpFreshCornerAtr;
+   sc.flipRecentBars  = InpFreshFlipBars;
+   sc.maxLegs         = MathMax(1, InpFreshMaxLegs);
+   sc.maxExtensionAtr = MathMax(1.0, InpFreshMaxExtAtr);
+   StructEntry.Config(sc);
+   StructEntry.Init(_Symbol, PERIOD_CURRENT);
+   g_structOk = true;
+
+//--- structure on the inside-bar timeframe
+   if(InpUseInsideBar)
+     {
+      StructureConfig ic = sc;
+      ic.insideMotherMinAtr    = InpIbMotherMinAtr;
+      ic.insideBabyMaxFrac     = InpIbBabyMaxFrac;
+      ic.insideMaxAgeBars      = MathMax(1, InpIbMaxAgeBars);
+      ic.insideExtremeLookback = MathMax(3, InpIbExtremeLookback);
+      StructSwing.Config(ic);
+      StructSwing.Init(_Symbol, InpIbTimeframe);
+
+      g_hAtrSwing = iATR(_Symbol, InpIbTimeframe, MathMax(2, InpAtrPeriod));
+      g_swingOk   = (g_hAtrSwing != INVALID_HANDLE);
+      if(!g_swingOk)
+         Print("KM1: inside-bar layer offline, ATR on ",
+               EnumToString(InpIbTimeframe), " could not be created.");
+     }
+
+//--- trend-based fibonacci
+   if(InpUseFibRev)
+     {
+      FibConfig fc;
+      KM_DefaultFibConfig(fc);
+      fc.r1            = InpFibR1;
+      fc.r2            = InpFibR2;
+      fc.r3            = InpFibR3;
+      fc.minImpulseAtr = InpFibMinImpulseAtr;
+      fc.minRetracePct = InpFibMinRetracePct;
+      fc.maxRetracePct = InpFibMaxRetracePct;
+      fc.levelTolerAtr = InpFibTolerAtr;
+      Fib.Config(fc);
+     }
+
+//--- top-down playbook
+   if(InpUsePlaybook)
+     {
+      PlaybookConfig pc;
+      KM_DefaultPlaybookConfig(pc);
+      pc.tfHigh          = InpPbHighTf;
+      pc.tfMid           = InpPbMidTf;
+      pc.tfLow           = InpPbLowTf;
+      pc.atrPeriod       = MathMax(2, InpAtrPeriod);
+      pc.maPeriod        = MathMax(2, InpPbMaPeriod);
+      pc.minConfidence   = InpPbMinConfidence;
+      pc.requireHtfAlign = InpPbRequireHtfAlign;
+      pc.vwapMinSd       = InpPbVwapMinSd;
+      Play.Config(pc);
+
+      g_playOk = Play.Init(_Symbol);
+      if(!g_playOk)
+         Print("KM1: playbook layer offline -> ", Play.LastIssue());
+     }
+
+   PrintFormat("KM1 add-ons: insideBar=%s(%s) fibRev=%s playbook=%s(%s/%s/%s) freshTrendOnly=%s",
+               (InpUseInsideBar ? "on" : "off"), EnumToString(InpIbTimeframe),
+               (InpUseFibRev ? "on" : "off"),
+               (InpUsePlaybook ? "on" : "off"),
+               EnumToString(InpPbHighTf), EnumToString(InpPbMidTf), EnumToString(InpPbLowTf),
+               (InpFreshTrendOnly ? "on" : "off"));
+
    PrintFormat("KM1 Entry v%s | %s %s | magic base %I64d -> buy %I64d / sell %I64d",
                KM_VERSION, _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()),
                InpMagicBase,
                KM_Magic(InpMagicBase, KM_EA_ENTRY, true),
                KM_Magic(InpMagicBase, KM_EA_ENTRY, false));
-   PrintFormat("KM1 gate: score>=%.0f mtf=%s adx>=%.0f | triggers pullback=%s breakout=%s reversal=%s",
-               InpMinScore, (InpRequireMtfAgree ? "yes" : "no"), InpMinAdx,
+   PrintFormat("KM1 continuation gate: score>=%.0f | mtf=%s | adx>=%.0f (regime trend at %.0f)",
+               InpMinScore, (InpRequireMtfAgree ? "required" : "off"),
+               InpMinAdx, InpAdxTrendLevel);
+   PrintFormat("KM1 triggers: pullback=%s breakout=%s reversal=%s (reversal needs score stretched %.0f against)",
                (InpUsePullback ? "on" : "off"), (InpUseBreakout ? "on" : "off"),
-               (InpUseReversal ? "on" : "off"));
+               (InpUseReversal ? "on" : "off"), InpReversalStretch);
    Print("KM1: orders are sent with TP and WITHOUT SL by design.");
+   if(InpDiagLogSeconds > 0)
+      PrintFormat("KM1: gate diagnostics will be logged every %d seconds.", InpDiagLogSeconds);
+   else
+      Print("KM1: set InpDiagLogSeconds (e.g. 60) to log why entries are being skipped.");
 
    return(INIT_SUCCEEDED);
   }
@@ -163,6 +474,9 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    Sig.Release();
+   Play.Release();
+   if(g_hAtrSwing != INVALID_HANDLE)
+      IndicatorRelease(g_hAtrSwing);
    Comment("");
   }
 
@@ -174,7 +488,19 @@ void OnTick()
    MarketView v;
    if(!Sig.Refresh(v) || !v.valid)
      {
-      g_lastBlock = "indicators warming up";
+      //--- This is the most common reason an EA looks dead: one indicator
+      //--- in the stack is not ready, usually a higher-timeframe EMA whose
+      //--- history the terminal has not downloaded yet. Say exactly which.
+      Blocked(KM1_B_WARMUP, "market view not ready -> " + Sig.LastIssue());
+
+      static datetime lastWarn = 0;
+      if(TimeCurrent() - lastWarn >= 30)
+        {
+         lastWarn = TimeCurrent();
+         Print("KM1 waiting on the market view: ", Sig.LastIssue());
+         Print("KM1 history available: ", Sig.WarmupReport());
+        }
+
       Panel(v);
       return;
      }
@@ -182,100 +508,213 @@ void OnTick()
 //--- EA1 is the analyst: publish for EA2 / EA3 / EA4 -----------------
    Bus.PublishView(v.score, v.regime, v.volState, v.atr, v.trendStrength);
 
+   RefreshAddOns(v);
+
    Book.Scan();
 
-   ENUM_KM_DIR dir = Decide(v);
-   if(dir != KM_DIR_NONE)
-      TryEnter(dir, v);
+   EntryCandidate cand;
+   if(Decide(v, cand) && cand.ok)
+      TryEnter(cand, v);
 
+   DiagLog(v);
    Panel(v);
   }
 
 //+------------------------------------------------------------------+
-//| The confluence gate. Returns the direction to take, or NONE, and  |
-//| records why it refused so the panel can show it.                  |
+//| Refresh the add-on layers. Each one is independent: if a layer is  |
+//| not ready the others still work, and the original triggers are     |
+//| never affected.                                                    |
 //+------------------------------------------------------------------+
-ENUM_KM_DIR Decide(const MarketView &v)
+void RefreshAddOns(const MarketView &v)
   {
-   g_lastBlock = "-";
+//--- structure on the chart timeframe, using the ATR the suite already
+//--- computed so both modules read the same volatility
+   if(g_structOk)
+      StructEntry.Refresh(v.atr);
+
+//--- structure + fib on the inside-bar timeframe
+   if(InpUseInsideBar && g_swingOk)
+     {
+      double atrSwing = 0.0;
+      double tmp[];
+      if(CopyBuffer(g_hAtrSwing, 0, 1, 1, tmp) >= 1 && tmp[0] > 0.0)
+        {
+         atrSwing = tmp[0];
+         StructSwing.Refresh(atrSwing);
+        }
+     }
+
+//--- fib is built from the chart-timeframe pivots
+   if(InpUseFibRev && g_structOk && StructEntry.Valid())
+      Fib.Build(StructEntry, v.atr, KM_Bid(_Symbol));
+
+//--- playbook, optionally following the style EA6 published
+   if(InpUsePlaybook && g_playOk)
+     {
+      if(InpPbUseBusStyle && Bus.StyleFresh())
+         Play.SetStyle(Bus.Style(), Bus.WorkingTf());
+      Play.Refresh();
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Periodic gate summary in the Experts log. Tells you which single  |
+//| condition is actually holding the EA back on live data.           |
+//+------------------------------------------------------------------+
+void DiagLog(const MarketView &v)
+  {
+   if(InpDiagLogSeconds <= 0)
+      return;
+
+   static datetime last = 0;
+   if(TimeCurrent() - last < InpDiagLogSeconds)
+      return;
+   last = TimeCurrent();
+
+   PrintFormat("KM1 DIAG | now: score %+.1f adx %.1f regime %s vol %s (atr x%.2f) mtf %s%s%s",
+               v.score, v.trendStrength, KM_RegimeName(v.regime),
+               KM_VolName(v.volState), v.atrRatio,
+               (v.mtfAgree ? "agree" : "split"),
+               (v.bullExhaust ? " BULL-EXH" : ""),
+               (v.bearExhaust ? " BEAR-EXH" : ""));
+   PrintFormat("KM1 DIAG | best seen: |score| %.1f, adx %.1f | your floors: score %.1f, adx %.1f",
+               g_scoreBest, g_adxBest, InpMinScore, InpMinAdx);
+
+   string line = "";
+   for(int i = 0; i < KM1_B_COUNT; i++)
+      if(g_block[i] > 0)
+         line += StringFormat("%s=%I64d  ", BlockName(i), g_block[i]);
+
+   PrintFormat("KM1 DIAG | %d entries in %I64d evaluations. Blocks: %s",
+               g_entryCount, g_evaluated, (line == "" ? "none" : line));
+  }
+
+//+------------------------------------------------------------------+
+//| The gate. Collects candidates from every enabled layer, applies    |
+//| the shared filters, and records why it refused so the panel can    |
+//| show which condition is actually binding.                          |
+//+------------------------------------------------------------------+
+bool Decide(const MarketView &v, EntryCandidate &out)
+  {
+   ResetCandidate(out);
+
+   g_evaluated++;
+   if(MathAbs(v.score) > g_scoreBest)
+      g_scoreBest = MathAbs(v.score);
+   if(v.trendStrength > g_adxBest)
+      g_adxBest = v.trendStrength;
 
 //--- tradability ---------------------------------------------------
    if(!TerminalInfoInteger(TERMINAL_CONNECTED) ||
       !MQLInfoInteger(MQL_TRADE_ALLOWED)       ||
       !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
      {
-      g_lastBlock = "trading not allowed";
-      return KM_DIR_NONE;
+      Blocked(KM1_B_NOTALLOWED, "trading not allowed (check the Algo Trading button)");
+      return false;
      }
 
    if(InpMaxSpreadPoints > 0.0 && KM_SpreadPoints(_Symbol) > InpMaxSpreadPoints)
      {
-      g_lastBlock = StringFormat("spread %.0f > %.0f", KM_SpreadPoints(_Symbol), InpMaxSpreadPoints);
-      return KM_DIR_NONE;
+      Blocked(KM1_B_SPREAD, StringFormat("spread %.0f > %.0f",
+                                         KM_SpreadPoints(_Symbol), InpMaxSpreadPoints));
+      return false;
      }
 
 //--- cooldown ------------------------------------------------------
    if(InpCooldownSeconds > 0 && g_lastEntryTime > 0 &&
       (TimeCurrent() - g_lastEntryTime) < InpCooldownSeconds)
      {
-      g_lastBlock = StringFormat("cooldown %ds left",
-                                 InpCooldownSeconds - (int)(TimeCurrent() - g_lastEntryTime));
-      return KM_DIR_NONE;
+      Blocked(KM1_B_COOLDOWN, StringFormat("cooldown, %ds left",
+                                           InpCooldownSeconds - (int)(TimeCurrent() - g_lastEntryTime)));
+      return false;
      }
 
    datetime curBar = (datetime)SeriesInfoInteger(_Symbol, PERIOD_CURRENT, SERIES_LASTBAR_DATE);
    if(InpOneEntryPerBar && curBar == g_lastEntryBar)
      {
-      g_lastBlock = "already entered this bar";
-      return KM_DIR_NONE;
+      Blocked(KM1_B_SAMEBAR, "already entered on this bar");
+      return false;
      }
 
-//--- 1. conviction -------------------------------------------------
-   ENUM_KM_DIR bias = Sig.Bias(v, InpMinScore);
-   if(bias == KM_DIR_NONE)
+   EntryCandidate cand;
+   ResetCandidate(cand);
+
+//=== collect candidates, most specific setup first ================
+//
+//  Order matters only when two layers fire on the same bar. The
+//  structural setups are checked first because they name an exact price
+//  level, while a score-driven continuation is a statement about
+//  conditions. Whenever the new layers are silent the original triggers
+//  behave exactly as they always did.
+//
+   if(!cand.ok) TryInsideBar(v, cand);
+   if(!cand.ok) TryFibReversal(v, cand);
+   if(!cand.ok) TryPlaybook(v, cand);
+   if(!cand.ok) TryScoreBased(v, cand);
+
+   if(!cand.ok)
      {
-      g_lastBlock = StringFormat("score %.0f below %.0f", v.score, InpMinScore);
-      return KM_DIR_NONE;
+      Blocked(KM1_B_SCORE, StringFormat("no layer qualified (score %+.0f, needs %+.0f)",
+                                        v.score, InpMinScore));
+      return false;
      }
 
-//--- 2. higher timeframe agreement ---------------------------------
-   if(InpRequireMtfAgree && !v.mtfAgree)
+   g_trigFired[MathMax(0, TriggerIndex(cand.trigger))]++;
+
+//=== shared gates ================================================
+
+//--- MTF agreement and the ADX floor exist to keep CONTINUATION
+//--- entries honest. A counter-trend setup that had to satisfy them
+//--- would be unreachable, which is exactly the trap the original
+//--- REVERSAL trigger fell into.
+   if(!cand.isCounter && InpRequireMtfAgree && !v.mtfAgree)
      {
-      g_lastBlock = "higher timeframes disagree";
-      return KM_DIR_NONE;
+      Blocked(KM1_B_MTF, "higher timeframes disagree (" + cand.trigger + ")");
+      return false;
      }
 
-//--- 3. trend strength --------------------------------------------
-   if(v.trendStrength < InpMinAdx)
+   if(!cand.isCounter && v.trendStrength < InpMinAdx)
      {
-      g_lastBlock = StringFormat("adx %.1f < %.1f", v.trendStrength, InpMinAdx);
-      return KM_DIR_NONE;
+      Blocked(KM1_B_ADX, StringFormat("adx %.1f < %.1f (%s)",
+                                      v.trendStrength, InpMinAdx, cand.trigger));
+      return false;
      }
 
-//--- 4. volatility ------------------------------------------------
+//--- volatility applies to every layer
    if(InpSkipExtremeVol && v.volState == KM_VOL_EXTREME)
      {
-      g_lastBlock = StringFormat("volatility EXTREME (atr x%.2f)", v.atrRatio);
-      return KM_DIR_NONE;
+      Blocked(KM1_B_VOL, StringFormat("volatility EXTREME (atr x%.2f)", v.atrRatio));
+      return false;
      }
 
-//--- 5. pinpoint trigger -----------------------------------------
-   string trig = "";
-   if(!Trigger(v, bias, trig))
+//--- never join a move that is already running -------------------
+   if(InpFreshTrendOnly)
      {
-      g_lastBlock = "no pinpoint trigger";
-      return KM_DIR_NONE;
+      if(!g_structOk || !StructEntry.Valid())
+        {
+         Blocked(KM1_B_STRUCT, "fresh-trend gate needs structure -> " + StructEntry.LastIssue());
+         return false;
+        }
+
+      string freshWhy;
+      if(!StructEntry.EntryIsFresh(cand.dir, InpFreshMinRetrace, freshWhy))
+        {
+         Blocked(KM1_B_MIDTREND, cand.trigger + ": " + freshWhy);
+         return false;
+        }
+      cand.note += " | fresh: " + freshWhy;
      }
 
-//--- 6. exposure ------------------------------------------------
-   bool isBuy = (bias == KM_DIR_BUY);
+//--- exposure ---------------------------------------------------
+   bool isBuy = (cand.dir == KM_DIR_BUY);
 
    KMAgg mine;
    Book.AggSlot(KM_EA_ENTRY, isBuy, mine);
    if(InpMaxPerDirection > 0 && mine.count >= InpMaxPerDirection)
      {
-      g_lastBlock = StringFormat("EA1 already holds %d on that side", mine.count);
-      return KM_DIR_NONE;
+      Blocked(KM1_B_EXPOSURE, StringFormat("EA1 already holds %d %s position(s)",
+                                           mine.count, (isBuy ? "buy" : "sell")));
+      return false;
      }
 
    if(!InpAllowBoth)
@@ -284,13 +723,177 @@ ENUM_KM_DIR Decide(const MarketView &v)
       Book.AggSlot(KM_EA_ENTRY, !isBuy, other);
       if(other.count > 0)
         {
-         g_lastBlock = "opposite EA1 position open";
-         return KM_DIR_NONE;
+         Blocked(KM1_B_EXPOSURE, "opposite EA1 position is open");
+         return false;
         }
      }
 
-   g_lastTrigger = trig;
-   return bias;
+   g_lastTrigger = cand.trigger;
+   out = cand;
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| ORIGINAL LAYER - score driven continuation and exhaustion         |
+//|                                                                  |
+//| Unchanged in behaviour: the composite score picks a direction, the |
+//| exhaustion case takes precedence over continuation, and the        |
+//| PULLBACK / BREAKOUT triggers confirm a continuation.               |
+//+------------------------------------------------------------------+
+void TryScoreBased(const MarketView &v, EntryCandidate &c)
+  {
+   ENUM_KM_DIR contBias = Sig.Bias(v, InpMinScore);
+   ENUM_KM_DIR revBias  = KM_DIR_NONE;
+
+   if(InpUseReversal)
+     {
+      if(v.bearExhaust && v.score <= -InpReversalStretch)
+         revBias = KM_DIR_BUY;      // stretched down and turning: buy it
+      else if(v.bullExhaust && v.score >= InpReversalStretch)
+         revBias = KM_DIR_SELL;     // stretched up and turning: sell it
+     }
+
+   if(contBias == KM_DIR_NONE && revBias == KM_DIR_NONE)
+      return;
+
+//--- exhaustion takes precedence: a score stretched far enough to raise
+//--- the flag is always past the continuation floor too, so continuation
+//--- would otherwise win every tie
+   bool isReversal = (revBias != KM_DIR_NONE);
+   ENUM_KM_DIR dir = (isReversal ? revBias : contBias);
+
+   string trig = "";
+   if(isReversal)
+      trig = "REVERSAL";
+   else if(!Trigger(v, dir, trig))
+     {
+      Blocked(KM1_B_TRIGGER, StringFormat("no trigger (regime %s, score %+.0f)",
+                                          KM_RegimeName(v.regime), v.score));
+      return;
+     }
+
+   c.ok        = true;
+   c.dir       = dir;
+   c.trigger   = trig;
+   c.isCounter = isReversal;
+   c.tpPrice   = 0.0;                  // use the configured TP mode
+   c.note      = StringFormat("score %+.0f", v.score);
+  }
+
+//+------------------------------------------------------------------+
+//| ADD-ON LAYER - inside bar at a swing extreme                      |
+//|                                                                  |
+//| A fresh swing high, a big candle that made it, a baby candle fully |
+//| inside that candle, and the entry is the break of the baby's low.  |
+//| Reward is a multiple of the implied risk; no stop is ever sent.    |
+//+------------------------------------------------------------------+
+void TryInsideBar(const MarketView &v, EntryCandidate &c)
+  {
+   if(!InpUseInsideBar || !g_swingOk || !StructSwing.Valid())
+      return;
+
+   KMInsideBar ib;
+   StructSwing.InsideBar(ib);
+   if(!ib.found)
+      return;
+
+   double bid = KM_Bid(_Symbol);
+   double ask = KM_Ask(_Symbol);
+   if(bid <= 0.0 || ask <= 0.0)
+      return;
+
+//--- SELL: fresh swing high, baby low broken, not already resolved
+   if(InpIbSellAtHigh && ib.atSwingHigh && !ib.brokenDown && bid < ib.babyLow)
+     {
+      double invalidation = (InpIbRiskFromMother ? ib.motherHigh : ib.babyHigh);
+      double risk         = invalidation - bid;
+      if(risk <= 0.0)
+         return;
+
+      c.ok        = true;
+      c.dir       = KM_DIR_SELL;
+      c.trigger   = "INSIDEBAR";
+      c.isCounter = true;   // selling into a high is not a continuation
+      c.tpPrice   = bid - risk * MathMax(0.5, InpIbRewardRatio);
+      c.note      = StringFormat("baby low %.*f broken, risk %.2f, 1:%.1f",
+                                 _Digits, ib.babyLow, risk, InpIbRewardRatio);
+      return;
+     }
+
+//--- BUY: the mirror at a fresh swing low
+   if(InpIbBuyAtLow && ib.atSwingLow && !ib.brokenUp && ask > ib.babyHigh)
+     {
+      double invalidation = (InpIbRiskFromMother ? ib.motherLow : ib.babyLow);
+      double risk         = ask - invalidation;
+      if(risk <= 0.0)
+         return;
+
+      c.ok        = true;
+      c.dir       = KM_DIR_BUY;
+      c.trigger   = "INSIDEBAR";
+      c.isCounter = true;
+      c.tpPrice   = ask + risk * MathMax(0.5, InpIbRewardRatio);
+      c.note      = StringFormat("baby high %.*f broken, risk %.2f, 1:%.1f",
+                                 _Digits, ib.babyHigh, risk, InpIbRewardRatio);
+      return;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| ADD-ON LAYER - trend-based Fibonacci reversal level               |
+//+------------------------------------------------------------------+
+void TryFibReversal(const MarketView &v, EntryCandidate &c)
+  {
+   if(!InpUseFibRev || !g_structOk)
+      return;
+
+   KMFibSetup fs;
+   Fib.Setup(fs);
+   if(!fs.valid || fs.reversalDir == KM_DIR_NONE)
+      return;
+
+   string why;
+   if(!Fib.ReversalSignal(fs.reversalDir, why))
+      return;
+
+   double tp = Fib.TargetFor(fs.reversalDir, InpFibRewardRatio);
+
+   c.ok        = true;
+   c.dir       = fs.reversalDir;
+   c.trigger   = "FIBREV";
+   c.isCounter = true;      // the trade runs against the impulse
+   c.tpPrice   = tp;
+   c.note      = why;
+  }
+
+//+------------------------------------------------------------------+
+//| ADD-ON LAYER - the top-down playbook edge                         |
+//+------------------------------------------------------------------+
+void TryPlaybook(const MarketView &v, EntryCandidate &c)
+  {
+   if(!InpUsePlaybook || !g_playOk)
+      return;
+
+   PlaybookView pv;
+   Play.View(pv);
+   if(!pv.valid || pv.dir == KM_DIR_NONE)
+      return;
+
+   string why;
+   if(!Play.Backs(pv.dir, why))
+      return;
+
+//--- a reversal-flavoured edge is counter-trend by nature; a trendline
+//--- or VWAP-side edge is a continuation
+   bool counter = (pv.edge == KM_EDGE_SR_DIVERGENCE ||
+                   pv.edge == KM_EDGE_PATTERN_LEVEL);
+
+   c.ok        = true;
+   c.dir       = pv.dir;
+   c.trigger   = "PLAYBOOK";
+   c.isCounter = counter;
+   c.tpPrice   = 0.0;       // the configured TP mode handles it
+   c.note      = why;
   }
 
 //+------------------------------------------------------------------+
@@ -350,20 +953,9 @@ bool Trigger(const MarketView &v, const ENUM_KM_DIR dir, string &which)
         }
      }
 
-//--- REVERSAL: range regime, stretched to a band edge, momentum turning
-   if(InpUseReversal && v.regime == KM_REGIME_RANGE)
-     {
-      if(isBuy && v.bearExhaust)
-        {
-         which = "REVERSAL";
-         return true;
-        }
-      if(!isBuy && v.bullExhaust)
-        {
-         which = "REVERSAL";
-         return true;
-        }
-     }
+//--- REVERSAL is NOT handled here. It needs a score pointing the other
+//--- way, so it cannot share this function's continuation direction and
+//--- is decided in Decide() instead.
 
    return false;
   }
@@ -394,23 +986,50 @@ double TpDistance(const MarketView &v)
   }
 
 //+------------------------------------------------------------------+
-void TryEnter(const ENUM_KM_DIR dir, const MarketView &v)
+//| Send the entry.                                                   |
+//|                                                                  |
+//| A layer that named its own target keeps it - that is how the       |
+//| inside-bar 1:3 and the fib projection reach the real level instead  |
+//| of a generic ATR distance. Everything else falls back to the        |
+//| configured TP mode. A stop loss is never sent, by design.           |
+//+------------------------------------------------------------------+
+void TryEnter(const EntryCandidate &cand, const MarketView &v)
   {
-   bool   isBuy = (dir == KM_DIR_BUY);
+   bool   isBuy = (cand.dir == KM_DIR_BUY);
    double entry = isBuy ? KM_Ask(_Symbol) : KM_Bid(_Symbol);
-   double dist  = TpDistance(v);
 
-   double tp = 0.0;
-   if(dist > 0.0)
-      tp = isBuy ? (entry + dist) : (entry - dist);
+   double tp   = 0.0;
+   double dist = 0.0;
+   string tpSrc;
+
+   if(cand.tpPrice > 0.0)
+     {
+      //--- the layer's own target, but only if it sits the right side of
+      //--- entry; a stale level would otherwise be sent as a wrong-way TP
+      bool sane = (isBuy ? (cand.tpPrice > entry) : (cand.tpPrice < entry));
+      if(sane)
+        {
+         tp    = cand.tpPrice;
+         dist  = MathAbs(tp - entry);
+         tpSrc = cand.trigger;
+        }
+     }
+
+   if(tp <= 0.0)
+     {
+      dist = TpDistance(v);
+      if(dist > 0.0)
+         tp = isBuy ? (entry + dist) : (entry - dist);
+      tpSrc = EnumToString(InpTpMode);
+     }
 
    long   magic = KM_Magic(InpMagicBase, KM_EA_ENTRY, isBuy);
-   string note  = StringFormat("%s|s%.0f|%s", g_lastTrigger, v.score, KM_RegimeName(v.regime));
+   string note  = StringFormat("%s|s%.0f|%s", cand.trigger, v.score, KM_RegimeName(v.regime));
 
    ulong ticket = 0;
    if(!Exec.Open(isBuy, InpLot, magic, tp, note, ticket))
      {
-      g_lastBlock = Exec.LastError();
+      Blocked(KM1_B_SENDFAIL, "order send failed -> " + Exec.LastError());
       return;
      }
 
@@ -418,10 +1037,24 @@ void TryEnter(const ENUM_KM_DIR dir, const MarketView &v)
    g_lastEntryBar  = (datetime)SeriesInfoInteger(_Symbol, PERIOD_CURRENT, SERIES_LASTBAR_DATE);
    g_entryCount++;
 
-   PrintFormat("KM1 ENTRY %s %.2f @ %.*f | trigger %s | score %.0f | %s | adx %.1f | tp %.*f (%.2f away, no SL)",
+   int ti = TriggerIndex(cand.trigger);
+   if(ti >= 0)
+      g_trigCount[ti]++;
+
+   PrintFormat("KM1 ENTRY %s %.2f @ %.*f | %s | tp %.*f (%.2f away, from %s) | no SL",
                (isBuy ? "BUY" : "SELL"), InpLot, _Digits, entry,
-               g_lastTrigger, v.score, KM_RegimeName(v.regime), v.trendStrength,
-               _Digits, tp, dist);
+               cand.trigger, _Digits, tp, dist, tpSrc);
+   PrintFormat("KM1   why: %s | score %+.0f adx %.1f %s %s",
+               cand.note, v.score, v.trendStrength,
+               KM_RegimeName(v.regime), KM_VolName(v.volState));
+
+   if(InpShowNarrative && InpUsePlaybook && g_playOk)
+     {
+      PlaybookView pv;
+      Play.View(pv);
+      if(pv.valid)
+         Print("KM1   playbook at entry:\n", pv.narrative);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -467,6 +1100,82 @@ void Panel(const MarketView &v)
    t += StringFormat("EA1 sell %d pos %.2f lots  %.2f %s\n", s.count, s.lots, s.profit, cur);
    t += StringFormat("entries taken: %d   last trigger: %s\n", g_entryCount, g_lastTrigger);
    t += "gate: " + g_lastBlock + "\n";
+
+//--- the histogram: which condition is the binding constraint
+   t += "-----------------------------------\n";
+   t += StringFormat("why no entry (of %I64d checks)\n", g_evaluated);
+
+   long worst = 0;
+   int  worstIdx = -1;
+   for(int i = 0; i < KM1_B_COUNT; i++)
+      if(g_block[i] > worst)
+        {
+         worst = g_block[i];
+         worstIdx = i;
+        }
+
+   for(int i = 0; i < KM1_B_COUNT; i++)
+     {
+      if(g_block[i] <= 0)
+         continue;
+      double pct = (g_evaluated > 0 ? 100.0 * (double)g_block[i] / (double)g_evaluated : 0.0);
+      t += StringFormat("  %-26s %6I64d  %4.1f%%%s\n",
+                        BlockName(i), g_block[i], pct, (i == worstIdx ? "  <== main" : ""));
+     }
+
+   t += StringFormat("best seen: |score| %.1f (floor %.1f), adx %.1f (floor %.1f)\n",
+                     g_scoreBest, InpMinScore, g_adxBest, InpMinAdx);
+
+//--- which layer is actually contributing
+   t += "-----------------------------------\n";
+   t += "layer            qualified  entered\n";
+   for(int i = 0; i < KM1_T_COUNT; i++)
+      t += StringFormat("  %-14s %8I64d %8I64d\n", TriggerName(i), g_trigFired[i], g_trigCount[i]);
+
+//--- add-on layer state
+   t += "-----------------------------------\n";
+   if(InpFreshTrendOnly && g_structOk)
+      t += "struct: " + StructEntry.Summary() + "\n";
+
+   if(InpUseInsideBar)
+     {
+      if(g_swingOk && StructSwing.Valid())
+        {
+         KMInsideBar ib;
+         StructSwing.InsideBar(ib);
+         if(ib.found)
+            t += StringFormat("insideBar %s: baby %.*f / %.*f age %d%s%s\n",
+                              EnumToString(InpIbTimeframe),
+                              _Digits, ib.babyLow, _Digits, ib.babyHigh, ib.ageBars,
+                              (ib.atSwingHigh ? " atHIGH" : (ib.atSwingLow ? " atLOW" : "")),
+                              (ib.brokenDown ? " brokeDn" : (ib.brokenUp ? " brokeUp" : "")));
+         else
+            t += "insideBar: none right now\n";
+        }
+      else
+         t += "insideBar: layer offline\n";
+     }
+
+   if(InpUseFibRev)
+      t += Fib.Summary() + "\n";
+
+   if(InpUsePlaybook)
+     {
+      if(g_playOk)
+        {
+         t += "playbook: " + Play.Summary() + "\n";
+         if(InpShowNarrative)
+           {
+            PlaybookView pv;
+            Play.View(pv);
+            if(pv.valid)
+               t += pv.narrative + "\n";
+           }
+        }
+      else
+         t += "playbook: layer offline\n";
+     }
+
    t += "no stop loss is used - EA2/3/4 manage adverse moves\n";
 
    Comment(t);
