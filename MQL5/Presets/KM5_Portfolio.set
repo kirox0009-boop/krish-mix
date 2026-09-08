@@ -1,0 +1,71 @@
+; KrishMix EA5 - Multi-Asset Portfolio  |  attach ONCE, on any chart
+;
+; Covers the whole watchlist from a single chart. Three jobs:
+;   1. entries on every asset independently - one asset never blocks another
+;   2. cross-asset assist: when one symbol is stuck, the others help pull it
+;      out, with the load split across every helper that has conviction
+;   3. portfolio exit once everything together is far enough ahead
+;
+; Check InpSymbols against Market Watch first. Names vary by broker
+; (XAUUSD vs XAUUSD.a, USTEC vs NAS100 vs US100) - the EA resolves suffixes
+; automatically and logs whatever it could not find.
+;
+; InpAssistHorizonAtr is in ATR MULTIPLES, not price. Contract values span
+; four orders of magnitude across this watchlist ($100 per dollar of gold per
+; lot, $1 per index point per lot), so only an ATR-normalised horizon gives
+; sane lots on every asset.
+;
+; InpAssistMaxOvershoot exists because broker minimum volume on the indices is
+; 0.10 lots, which over 8 ATR on the Dow is worth about $120. A $50 drawdown
+; therefore cannot be assisted there without the help becoming a bigger bet
+; than the problem, so such a helper is SKIPPED and the reason logged.
+;
+; KEEP InpMagicBase IDENTICAL IN EVERY KrishMix EA.
+InpMagicBase=51000
+InpCommissionPerLot=0
+InpSlippagePoints=40
+InpSymbols=XAUUSD,BTCUSD,XAGUSD,XTIUSD,USTEC,US30
+InpDeferToSuite=true
+InpAllowEntries=true
+InpLot=0.01
+InpScaleLotByAsset=true
+InpRiskPerEntry=20
+InpMaxEntriesPerSym=1
+InpMinScore=40
+InpMinAdx=20
+InpRequireMtfAgree=true
+InpFreshTrendOnly=true
+InpFreshMinRetrace=50
+InpEntryTpAtrMult=2
+InpEntryCooldownSec=600
+InpMaxSpreadAtr=0.3
+InpAllowAssist=true
+InpAssistTriggerDd=60
+InpAssistCoverage=1
+InpAssistHorizonAtr=8
+InpAssistMinScore=55
+InpAssistMinAdx=24
+InpAssistRequireTrend=true
+InpAssistBlockExhaust=true
+InpAssistMaxOvershoot=2
+InpAssistMaxLotPerSym=1
+InpAssistMaxLegsPerSym=2
+InpAssistCooldownSec=300
+InpClosePortfolio=true
+InpPfTargetPerLot=25
+InpPfMinTarget=2
+InpPfManageFromLegs=2
+InpPfDepthReliefFrom=4
+InpPfDepthReliefStep=0.94
+InpPfMinReliefFloor=0.2
+InpEmaFast=8
+InpEmaSlow=21
+InpEmaFilter=50
+InpWorkTf=15
+InpMtf1=16385
+InpMtf2=16388
+InpAdxPeriod=14
+InpAtrPeriod=14
+InpDonchianPeriod=40
+InpShowPanel=true
+InpLogSeconds=300

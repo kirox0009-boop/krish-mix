@@ -11,10 +11,15 @@
 #define KM_VERSION "1.00"
 
 //--- EA slot ids inside the magic-number family
-#define KM_EA_ENTRY   1   // EA1 - pinpoint entry
-#define KM_EA_GRID    2   // EA2 - grid / averaging brain
-#define KM_EA_HEDGE   3   // EA3 - recovery hedge
-#define KM_EA_BASKET  4   // EA4 - basket take profit manager
+#define KM_EA_ENTRY     1   // EA1 - pinpoint entry
+#define KM_EA_GRID      2   // EA2 - grid / averaging brain
+#define KM_EA_HEDGE     3   // EA3 - recovery hedge
+#define KM_EA_BASKET    4   // EA4 - basket take profit manager
+#define KM_EA_PORTFOLIO 5   // EA5 - multi-asset recovery and portfolio exit
+#define KM_EA_TFSELECT  6   // EA6 - timeframe selector (places no orders)
+
+#define KM_EA_FIRST     1
+#define KM_EA_LAST      6
 
 //+------------------------------------------------------------------+
 //| Enumerations                                                     |
@@ -42,6 +47,44 @@ enum ENUM_KM_DIR
    KM_DIR_NONE =  0, // Flat / no bias
    KM_DIR_BUY  =  1  // Long
   };
+
+//--- Trading style, which is what decides the working timeframe.
+//--- Published by KM6 and read by the entry logic.
+enum ENUM_KM_STYLE
+  {
+   KM_STYLE_SCALP    = 0, // Scalping    - M1 / M3 / M5
+   KM_STYLE_INTRADAY = 1, // Intraday    - M5 / M15
+   KM_STYLE_SWING    = 2  // Swing       - H1 / H4
+  };
+
+string KM_StyleName(const ENUM_KM_STYLE s)
+  {
+   switch(s)
+     {
+      case KM_STYLE_SCALP:    return "SCALP";
+      case KM_STYLE_INTRADAY: return "INTRADAY";
+      case KM_STYLE_SWING:    return "SWING";
+     }
+   return "?";
+  }
+
+//--- Higher timeframe verdict for the top-down playbook
+enum ENUM_KM_HTFBIAS
+  {
+   KM_HTF_CONSOLIDATING = 0, // Ranging / no directional edge
+   KM_HTF_UP            = 1, // Uptrend
+   KM_HTF_DOWN          = 2  // Downtrend
+  };
+
+string KM_HtfName(const ENUM_KM_HTFBIAS b)
+  {
+   switch(b)
+     {
+      case KM_HTF_UP:   return "UPTREND";
+      case KM_HTF_DOWN: return "DOWNTREND";
+     }
+   return "CONSOLIDATING";
+  }
 
 //+------------------------------------------------------------------+
 //| Magic number layout                                              |
@@ -89,10 +132,12 @@ string KM_EaSlotName(const int slot)
   {
    switch(slot)
      {
-      case KM_EA_ENTRY:  return "E1-Entry";
-      case KM_EA_GRID:   return "E2-Grid";
-      case KM_EA_HEDGE:  return "E3-Hedge";
-      case KM_EA_BASKET: return "E4-Basket";
+      case KM_EA_ENTRY:     return "E1-Entry";
+      case KM_EA_GRID:      return "E2-Grid";
+      case KM_EA_HEDGE:     return "E3-Hedge";
+      case KM_EA_BASKET:    return "E4-Basket";
+      case KM_EA_PORTFOLIO: return "E5-Portfolio";
+      case KM_EA_TFSELECT:  return "E6-TfSelect";
      }
    return "unknown";
   }
@@ -216,6 +261,135 @@ double KM_MaxAffordableLot(const string sym, const bool isBuy, const double want
       return 0.0;
 
    return lot;
+  }
+
+//+------------------------------------------------------------------+
+//| Multi-symbol helpers                                             |
+//|                                                                  |
+//| Brokers name the same instrument a dozen different ways: XAUUSD,  |
+//| XAUUSD.a, XAUUSDm, GOLD, US100 versus USTEC versus NAS100. A      |
+//| configured list therefore has to be RESOLVED against what this    |
+//| particular broker actually offers before it can be traded.        |
+//+------------------------------------------------------------------+
+#define KM_MAX_SYMBOLS 16
+
+//--- split a comma separated list, trimmed, into out[]
+int KM_ParseSymbolList(const string csv, string &out[])
+  {
+   ArrayResize(out, 0);
+
+   string parts[];
+   int n = StringSplit(csv, ',', parts);
+   if(n <= 0)
+      return 0;
+
+   int k = 0;
+   for(int i = 0; i < n && k < KM_MAX_SYMBOLS; i++)
+     {
+      string s = parts[i];
+      StringTrimLeft(s);
+      StringTrimRight(s);
+      if(StringLen(s) == 0)
+         continue;
+      ArrayResize(out, k + 1);
+      out[k++] = s;
+     }
+   return k;
+  }
+
+//--- Find the broker's actual name for a wanted instrument.
+//--- Tries the exact name, then a prefix match, then a contains match.
+bool KM_ResolveSymbol(const string want, string &resolved)
+  {
+   resolved = "";
+   if(StringLen(want) == 0)
+      return false;
+
+//--- exact name first
+   if(SymbolSelect(want, true))
+     {
+      if(SymbolInfoDouble(want, SYMBOL_BID) > 0.0 ||
+         SymbolInfoInteger(want, SYMBOL_SELECT))
+        {
+         resolved = want;
+         return true;
+        }
+     }
+
+   string wantUp = want;
+   StringToUpper(wantUp);
+
+   int total = SymbolsTotal(false);   // every symbol the server offers
+
+//--- prefix match: XAUUSD -> XAUUSD.a, XAUUSDm
+   for(int i = 0; i < total; i++)
+     {
+      string nm = SymbolName(i, false);
+      string up = nm;
+      StringToUpper(up);
+      if(StringFind(up, wantUp) == 0)
+        {
+         if(SymbolSelect(nm, true))
+           {
+            resolved = nm;
+            return true;
+           }
+        }
+     }
+
+//--- contains match, as a last resort
+   for(int i = 0; i < total; i++)
+     {
+      string nm = SymbolName(i, false);
+      string up = nm;
+      StringToUpper(up);
+      if(StringFind(up, wantUp) >= 0)
+        {
+         if(SymbolSelect(nm, true))
+           {
+            resolved = nm;
+            return true;
+           }
+        }
+     }
+
+   return false;
+  }
+
+//--- resolve a whole list, reporting what could not be found
+int KM_ResolveSymbolList(const string csv, string &resolved[], string &missing)
+  {
+   missing = "";
+   ArrayResize(resolved, 0);
+
+   string wanted[];
+   int n = KM_ParseSymbolList(csv, wanted);
+   int k = 0;
+
+   for(int i = 0; i < n; i++)
+     {
+      string got;
+      if(KM_ResolveSymbol(wanted[i], got))
+        {
+         //--- skip duplicates, e.g. two aliases resolving to one symbol
+         bool dup = false;
+         for(int j = 0; j < k; j++)
+            if(resolved[j] == got)
+              {
+               dup = true;
+               break;
+              }
+         if(dup)
+            continue;
+
+         ArrayResize(resolved, k + 1);
+         resolved[k++] = got;
+        }
+      else
+         missing += wanted[i] + " ";
+     }
+
+   return k;
   }
 
 //+------------------------------------------------------------------+

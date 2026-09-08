@@ -1,0 +1,30 @@
+; KrishMix EA6 - Timeframe Selector  |  attach ONCE, on any chart
+;
+; Places no orders. Decides scalp / intraday / swing per symbol and publishes
+; the working timeframe for EA1 and EA5 to read.
+;
+; The dominant term is spread economics: scalping only works while the spread
+; is small next to the range a bar actually delivers. On gold and the indices
+; that single test rules scalping out for most of the session, which is the
+; honest answer rather than a flattering one.
+;
+; Leave InpSymbols empty to cover only this chart's symbol.
+InpSymbols=
+InpSpreadScalpMax=0.25
+InpSpreadIntraMax=0.6
+InpRefTf=5
+InpTrendTf=16385
+InpAtrPeriod=14
+InpAtrAvgPeriod=100
+InpAdxPeriod=14
+InpVolLow=0.75
+InpVolHigh=1.3
+InpAdxTrending=25
+InpLiquidFrom=8
+InpLiquidTo=20
+InpAllowScalp=true
+InpAllowIntraday=true
+InpAllowSwing=true
+InpRecheckSeconds=60
+InpLogChanges=true
+InpShowPanel=true

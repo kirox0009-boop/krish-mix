@@ -54,6 +54,15 @@ input long             InpMagicBase        = KM_MAGIC_BASE_DEFAULT; // Magic bas
 input double           InpCommissionPerLot = 0.0;   // Round-turn commission per 1.00 lot
 input int              InpSlippagePoints   = 40;    // Max deviation, points
 
+input group "=== Hand-off from EA1 (read this first) ==="
+//--- EA1 sends its entry with a real take profit, e.g. a 1:3 target. While
+//--- that trade is still a single position riding that TP, this EA must
+//--- keep its hands off it: otherwise the money floor below closes the
+//--- trade for a dollar or two and the 1:3 target never gets a chance.
+//--- Basket management is for baskets. It starts when EA2 opens the grid.
+input bool             InpRespectEntryTP   = true;  // Let a lone entry ride its own TP
+input int              InpManageFromLegs   = 2;     // Basket management starts at this many legs
+
 input group "=== Base target ==="
 input double           InpTargetPerLot     = 25.0;  // Money per 1.00 lot of group volume
 input double           InpMinTarget         = 1.00;  // Absolute floor, always > 0
@@ -171,6 +180,14 @@ int OnInit()
                (InpCloseDirection ? "on" : "off"),
                (InpCloseWholeBook ? "on" : "off"));
    Print("KM4: a group is only ever closed in profit. No equity rule, no halt.");
+
+   if(InpRespectEntryTP)
+      PrintFormat("KM4: hands off a lone entry that still carries its own TP. "
+                  "Basket management begins at %d legs or as soon as EA2 opens the grid.",
+                  InpManageFromLegs);
+   else
+      Print("KM4 WARNING: InpRespectEntryTP is off, so the money floor can close "
+            "an EA1 entry long before its own TP is reached.");
 
    return(INIT_SUCCEEDED);
   }
@@ -422,6 +439,53 @@ bool HandleRecoveryGroup(const MarketView &v)
   }
 
 //+------------------------------------------------------------------+
+//| Is this side still a plain entry riding its own take profit?      |
+//|                                                                  |
+//| True while ALL of these hold:                                     |
+//|   - EA2 has not opened the grid on this side                       |
+//|   - the side is shallower than InpManageFromLegs                   |
+//|   - every leg still carries a broker-side TP                       |
+//|                                                                  |
+//| In that state the trade has a real target of its own and this EA   |
+//| leaves it alone. The moment the grid opens, or a leg has no TP,    |
+//| it becomes a basket and the adaptive target takes over.            |
+//+------------------------------------------------------------------+
+bool StillEntryTpPhase(const bool isBuy)
+  {
+   if(!InpRespectEntryTP)
+      return false;
+
+   if(Book.GridOpen(isBuy))
+      return false;                       // averaging started: it is a basket now
+
+   KMAgg a;
+   Book.AggDirection(isBuy, a);
+   if(a.count == 0)
+      return false;
+
+   if(a.count >= InpManageFromLegs)
+      return false;                       // deep enough to be managed
+
+   if(Book.CountWithTP(isBuy) < a.count)
+      return false;                       // some leg has no TP, nothing would close it
+
+   return true;
+  }
+
+//--- same question for the whole book: no grid anywhere and every open
+//--- leg still has its own TP, so each should ride to its own target
+bool BookStillEntryTpPhase(void)
+  {
+   if(!InpRespectEntryTP)
+      return false;
+   if(Book.Total() == 0)
+      return false;
+   if(Book.AnyGridLegs())
+      return false;
+   return (Book.CountWithTPAll() == Book.Total());
+  }
+
+//+------------------------------------------------------------------+
 //| Group 2: plain direction baskets                                  |
 //+------------------------------------------------------------------+
 bool HandleDirection(const MarketView &v)
@@ -438,6 +502,26 @@ bool HandleDirection(const MarketView &v)
             g_whyBuy = "held by the recovery group";
          else
             g_whySell = "held by the recovery group";
+         continue;
+        }
+
+      //--- still a single entry on its own TP: hands off
+      if(StillEntryTpPhase(isBuy))
+        {
+         KMAgg e;
+         Book.AggDirection(isBuy, e);
+         string msg = StringFormat("riding its own TP (%d leg, no grid yet)", e.count);
+         if(isBuy)
+           {
+            g_whyBuy = msg;
+            g_tgtBuy = 0.0;
+           }
+         else
+           {
+            g_whySell = msg;
+            g_tgtSell = 0.0;
+           }
+         g_peak[isBuy ? KM4_G_BUY : KM4_G_SELL] = 0.0;
          continue;
         }
 
@@ -501,6 +585,14 @@ bool HandleWholeBook(const MarketView &v)
 
    g_tgtBook = 0.0;
    if(all.count == 0)
+     {
+      g_peak[KM4_G_BOOK] = 0.0;
+      return false;
+     }
+
+//--- nothing has gone wrong yet: every leg is an entry on its own TP,
+//--- so sweeping the book here would just cut those targets short
+   if(BookStillEntryTpPhase())
      {
       g_peak[KM4_G_BOOK] = 0.0;
       return false;
@@ -618,11 +710,11 @@ void Panel(const MarketView &v)
    t += "-----------------------------------\n";
    t += StringFormat("BUY   %d legs %.2f lots  P/L %8.2f %s\n", b.count, b.lots, b.profit, cur);
    if(b.count > 0)
-      t += "  target " + g_whyBuy + "\n";
+      t += (g_tgtBuy > 0.0 ? "  target " : "  ") + g_whyBuy + "\n";
 
    t += StringFormat("SELL  %d legs %.2f lots  P/L %8.2f %s\n", s.count, s.lots, s.profit, cur);
    if(s.count > 0)
-      t += "  target " + g_whySell + "\n";
+      t += (g_tgtSell > 0.0 ? "  target " : "  ") + g_whySell + "\n";
 
    if(hb.count > 0 || hs.count > 0)
      {

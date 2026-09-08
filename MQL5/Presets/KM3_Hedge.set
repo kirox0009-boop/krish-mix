@@ -1,36 +1,39 @@
-; KrishMix EA3 - Recovery Hedge | XAUUSD M1
+; KrishMix EA3 - Recovery Hedge  |  attach per traded symbol
 ;
 ; InpRecoveryOverPrice IS THE MOST IMPORTANT NUMBER IN THIS FILE.
-; It is the gold movement the recovery is expected to work over, and it
-; sets the lot size. Recovering a $450 drawdown:
+; It is the movement the recovery is expected to work over, and it sets the
+; lot. Recovering a $450 drawdown on gold:
 ;     over $20 -> 0.23 lots    calm, slow
 ;     over $10 -> 0.45 lots    <- this preset
 ;     over  $5 -> 0.90 lots    aggressive
 ;     over  $1 -> 4.50 lots    reckless
 ; Lower it only if the account can genuinely carry the volume.
 ;
-; KEEP InpMagicBase IDENTICAL IN ALL FOUR EAs.
+; InpBlockOnExhaustion stays true: joining the last gasp of a move is the
+; single worst thing a recovery hedge can do.
+;
+; KEEP InpMagicBase IDENTICAL IN EVERY KrishMix EA.
 InpMagicBase=51000
-InpCommissionPerLot=0.0
+InpCommissionPerLot=0
 InpSlippagePoints=40
 InpTriggerMode=2
-InpTriggerMoney=40.0
-InpTriggerAtrMult=3.0
+InpTriggerMoney=40
+InpTriggerAtrMult=3
 InpMinBasketLegs=2
-InpMinScore=55.0
-InpMinAdx=24.0
+InpMinScore=55
+InpMinAdx=24
 InpRequireTrendRegime=true
 InpRequireMtfAgree=true
 InpBlockOnExhaustion=true
 InpMaxSpreadPoints=80
-InpLockRatio=1.0
+InpLockRatio=1
 InpHorizonMode=0
-InpRecoveryOverPrice=10.0
-InpRecoveryAtrTarget=20.0
+InpRecoveryOverPrice=10
+InpRecoveryAtrTarget=20
 InpMinHedgeLot=0.01
-InpMaxHedgeLot=2.0
-InpMaxHedgeTotal=0.0
-InpMaxHedgeVsBasket=12.0
+InpMaxHedgeLot=2
+InpMaxHedgeTotal=0
+InpMaxHedgeVsBasket=12
 InpMaxHedgeLegs=3
 InpRehedgeAtrGap=2.5
 InpMinSecondsBetween=120

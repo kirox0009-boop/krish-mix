@@ -39,6 +39,14 @@
 #define KM_KEY_LASTCLOSE      "lastclose"    // EA4: last basket close time
 #define KM_KEY_CYCLE          "cycle"        // EA4: increments on every close
 
+#define KM_KEY_STYLE          "style"        // EA6: chosen trading style
+#define KM_KEY_WORKTF         "worktf"       // EA6: chosen working timeframe
+#define KM_KEY_STYLETIME      "styletime"    // EA6: when it was decided
+
+#define KM_KEY_PF_DD          "pfdd"         // EA5: this symbol's drawdown
+#define KM_KEY_PF_LOTS        "pflots"       // EA5: this symbol's volume
+#define KM_KEY_PF_ASSIST      "pfassist"     // EA5: assist legs open here
+
 #define KM_KEY_HB_PREFIX      "hb"           // heartbeat per EA slot
 
 //+------------------------------------------------------------------+
@@ -114,6 +122,32 @@ public:
       return (ENUM_KM_VOL)(int)Get(KM_KEY_VOL, (double)KM_VOL_NORMAL);
      }
 
+   //--- trading style and working timeframe, published by EA6 -------
+   void              PublishStyle(const ENUM_KM_STYLE s, const ENUM_TIMEFRAMES tf) const
+     {
+      Set(KM_KEY_STYLE,  (double)s);
+      Set(KM_KEY_WORKTF, (double)tf);
+      Set(KM_KEY_STYLETIME, (double)TimeCurrent());
+     }
+
+   ENUM_KM_STYLE     Style(const ENUM_KM_STYLE def = KM_STYLE_INTRADAY) const
+     {
+      return (ENUM_KM_STYLE)(int)Get(KM_KEY_STYLE, (double)def);
+     }
+
+   ENUM_TIMEFRAMES   WorkingTf(const ENUM_TIMEFRAMES def = PERIOD_M5) const
+     {
+      return (ENUM_TIMEFRAMES)(int)Get(KM_KEY_WORKTF, (double)def);
+     }
+
+   bool              StyleFresh(const int maxAgeSeconds = 900) const
+     {
+      double t = Get(KM_KEY_STYLETIME, 0.0);
+      if(t <= 0.0)
+         return false;
+      return ((TimeCurrent() - (datetime)t) <= maxAgeSeconds);
+     }
+
    //--- is the published market view still fresh enough to trust?
    bool              ViewFresh(const int maxAgeSeconds = 120) const
      {
@@ -141,12 +175,26 @@ public:
    string            Roster(const int maxAgeSeconds = 90) const
      {
       string s = "";
-      for(int slot = KM_EA_ENTRY; slot <= KM_EA_BASKET; slot++)
+      for(int slot = KM_EA_FIRST; slot <= KM_EA_LAST; slot++)
         {
          s += KM_EaSlotName(slot);
          s += Alive(slot, maxAgeSeconds) ? ":on  " : ":OFF ";
         }
       return s;
+     }
+
+   //--- compact roster: only the members that are actually running
+   string            RosterShort(const int maxAgeSeconds = 90) const
+     {
+      string on = "", off = "";
+      for(int slot = KM_EA_FIRST; slot <= KM_EA_LAST; slot++)
+        {
+         if(Alive(slot, maxAgeSeconds))
+            on += StringFormat("E%d ", slot);
+         else
+            off += StringFormat("E%d ", slot);
+        }
+      return "on: " + (on == "" ? "-" : on) + "| off: " + (off == "" ? "-" : off);
      }
 
    //--- wipe every key of this symbol (used by a full suite reset)
