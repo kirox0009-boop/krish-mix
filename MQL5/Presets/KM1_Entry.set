@@ -90,5 +90,11 @@ InpFreshFlipBars=25
 InpFreshMaxLegs=5
 InpFreshMaxExtAtr=12
 InpSwingStrength=3
+; --- Dashboard telemetry (read only) ---
+; Writes a JSON snapshot to MQL5\Files\KrishMix\telemetry for the web
+; dashboard. Places no orders and changes no trading behaviour.
+InpTelemetry=true
+InpTelemetrySec=5
+;
 InpShowPanel=true
 InpShowNarrative=true

@@ -45,6 +45,8 @@
 #include <KrishMix\Signals.mqh>
 #include <KrishMix\Positions.mqh>
 #include <KrishMix\Execution.mqh>
+//--- read-only state export for the dashboard
+#include <KrishMix\Telemetry.mqh>
 
 //+------------------------------------------------------------------+
 enum ENUM_KM2_LOTMODE
@@ -104,11 +106,16 @@ input int              InpAtrPeriod        = 14;    // ATR period
 input int              InpDonchianPeriod   = 40;    // Donchian lookback
 input bool             InpCrossCheckEA1    = false; // Also require EA1's published view to agree
 
+input group "=== Dashboard telemetry (read only) ==="
+input bool             InpTelemetry        = true;  // Export state for the dashboard
+input int              InpTelemetrySec     = 5;     // Seconds between snapshots
+
 input group "=== Display ==="
 input bool             InpShowPanel        = true;  // On-chart panel
 
 //+------------------------------------------------------------------+
-CKMBus     Bus;
+CKMBus       Bus;
+CKMTelemetry Tel;      // dashboard export, read only
 CKMSignals Sig;
 CKMBook    Book;
 CKMExec    Exec;
@@ -193,6 +200,14 @@ int OnInit()
    PrintFormat("KM2 lot plan %s: L1=%.2f L2=%.2f L3=%.2f L4=%.2f L5=%.2f (cautious scale %.2f)",
                EnumToString(InpLotMode), LotForLevel(1), LotForLevel(2), LotForLevel(3),
                LotForLevel(4), LotForLevel(5), InpCautiousLotScale);
+   if(InpTelemetry)
+     {
+      if(Tel.Init("KM2", _Symbol, InpTelemetrySec))
+         PrintFormat("KM2 telemetry -> MQL5\\Files\\%s", Tel.FileName());
+      else
+         Print("KM2 telemetry could not start: ", Tel.LastError());
+     }
+
    PrintFormat("KM2 exposure caps: levels %s | volume %s",
                (InpMaxLevels > 0 ? IntegerToString(InpMaxLevels) : "unlimited"),
                (InpMaxLotsPerSide > 0.0 ? DoubleToString(InpMaxLotsPerSide, 2) : "unlimited"));
@@ -510,8 +525,100 @@ void Publish(void)
   }
 
 //+------------------------------------------------------------------+
+//| Dashboard export. Read only, and taken here because every exit    |
+//| path from OnTick passes through Panel().                          |
+//|                                                                  |
+//| The valuable part for a dashboard is not that the grid added a     |
+//| level - it is the plan behind the decision: how far price has to   |
+//| travel, how far it actually has, how hard the market is still      |
+//| pushing, and the reason string when the answer was to wait.        |
+//+------------------------------------------------------------------+
+void WriteTelemetry(const MarketView &v)
+  {
+   if(!InpTelemetry || !Tel.Enabled() || !Tel.Due())
+      return;
+
+   Tel.Begin();
+   Tel.SymbolBlock(_Symbol);
+   Tel.AccountBlock();
+
+   bool alive[KM_EA_LAST];
+   for(int s = KM_EA_FIRST; s <= KM_EA_LAST; s++)
+      alive[s - KM_EA_FIRST] = Bus.Alive(s);
+   Tel.Roster("roster", alive, KM_EA_LAST - KM_EA_FIRST + 1);
+
+   Tel.Obj("view");
+   Tel.Bool("valid",   v.valid);
+   Tel.Num("score",    v.score, 1);
+   Tel.Str("regime",   KM_RegimeName(v.regime));
+   Tel.Str("vol",      KM_VolName(v.volState));
+   Tel.Num("atr",      v.atr, _Digits);
+   Tel.Num("atrRatio", v.atrRatio, 3);
+   Tel.Num("adx",      v.trendStrength, 1);
+   Tel.Bool("bullExhaust", v.bullExhaust);
+   Tel.Bool("bearExhaust", v.bearExhaust);
+   Tel.EndObj();
+
+//--- both sides, each with its basket and its plan
+   Tel.Arr("sides");
+   for(int pass = 0; pass < 2; pass++)
+     {
+      bool isBuy = (pass == 0);
+
+      KMAgg a;
+      Book.AggDirection(isBuy, a);
+
+      Tel.ArrObj();
+      Tel.Str("side", (isBuy ? "BUY" : "SELL"));
+
+      Tel.Obj("basket");
+      Tel.Int("legs",     a.count);
+      Tel.Num("lots",     a.lots, 2);
+      Tel.Num("profit",   a.profit, 2);
+      Tel.Num("avgPrice", a.avgPrice, _Digits);
+      Tel.Num("anchor",   Book.GridAnchor(isBuy), _Digits);
+      Tel.Int("lastOpen", (long)a.lastOpen);
+      Tel.EndObj();
+
+      Tel.Obj("plan");
+      Tel.Bool("wouldAdd",  (isBuy ? g_planBuy.add       : g_planSell.add));
+      Tel.Int("level",      (isBuy ? g_planBuy.level     : g_planSell.level));
+      Tel.Num("needed",     (isBuy ? g_planBuy.distance  : g_planSell.distance), _Digits);
+      Tel.Num("travelled",  (isBuy ? g_planBuy.achieved  : g_planSell.achieved), _Digits);
+      Tel.Num("pressure",   (isBuy ? g_planBuy.pressure  : g_planSell.pressure), 0);
+      Tel.Bool("exhausted", (isBuy ? g_planBuy.exhausted : g_planSell.exhausted));
+      Tel.Num("nextLot",    LotForLevel(isBuy ? g_planBuy.level : g_planSell.level), 2);
+      Tel.Str("reason",     (isBuy ? g_planBuy.reason    : g_planSell.reason));
+      Tel.EndObj();
+
+      Tel.Int("addsMade", (isBuy ? g_addsBuy : g_addsSell));
+      Tel.EndObj();
+     }
+   Tel.EndArr();
+
+   Tel.Obj("config");
+   Tel.Str("lotMode",          EnumToString(InpLotMode));
+   Tel.Num("baseLot",          InpBaseLot, 2);
+   Tel.Num("lotIncrement",     InpLotIncrement, 2);
+   Tel.Num("atrStepMult",      InpAtrStepMult, 2);
+   Tel.Num("minStepPrice",     InpMinStepPrice, 2);
+   Tel.Num("maxPressureToAdd", InpMaxPressureToAdd, 0);
+   Tel.Num("cautiousLotScale", InpCautiousLotScale, 2);
+   Tel.Int("maxLevels",        InpMaxLevels);
+   Tel.Num("maxLotsPerSide",   InpMaxLotsPerSide, 2);
+   Tel.Bool("onlyLosingSide",  InpOnlyLosingSide);
+   Tel.EndObj();
+
+   Tel.HealthBlock();
+   Tel.End();
+  }
+
+//+------------------------------------------------------------------+
 void Panel(const MarketView &v)
   {
+//--- exported here because every OnTick exit path reaches Panel()
+   WriteTelemetry(v);
+
    if(!InpShowPanel)
       return;
 

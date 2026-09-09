@@ -47,6 +47,8 @@
 #include <KrishMix\Signals.mqh>
 #include <KrishMix\Positions.mqh>
 #include <KrishMix\Execution.mqh>
+//--- read-only state export for the dashboard
+#include <KrishMix\Telemetry.mqh>
 
 //+------------------------------------------------------------------+
 input group "=== Suite wiring (keep identical in all 4 EAs) ==="
@@ -109,11 +111,16 @@ input int              InpAdxPeriod        = 14;    // ADX period
 input int              InpAtrPeriod        = 14;    // ATR period
 input int              InpDonchianPeriod   = 40;    // Donchian lookback
 
+input group "=== Dashboard telemetry (read only) ==="
+input bool             InpTelemetry        = true;  // Export state for the dashboard
+input int              InpTelemetrySec     = 5;     // Seconds between snapshots
+
 input group "=== Display ==="
 input bool             InpShowPanel        = true;  // On-chart panel
 
 //+------------------------------------------------------------------+
-CKMBus     Bus;
+CKMBus       Bus;
+CKMTelemetry Tel;      // dashboard export, read only
 CKMSignals Sig;
 CKMBook    Book;
 CKMExec    Exec;
@@ -188,6 +195,14 @@ int OnInit()
    else
       Print("KM4 WARNING: InpRespectEntryTP is off, so the money floor can close "
             "an EA1 entry long before its own TP is reached.");
+
+   if(InpTelemetry)
+     {
+      if(Tel.Init("KM4", _Symbol, InpTelemetrySec))
+         PrintFormat("KM4 telemetry -> MQL5\\Files\\%s", Tel.FileName());
+      else
+         Print("KM4 telemetry could not start: ", Tel.LastError());
+     }
 
    return(INIT_SUCCEEDED);
   }
@@ -675,8 +690,122 @@ void Publish(void)
   }
 
 //+------------------------------------------------------------------+
+//| Dashboard export. Read only.                                      |
+//|                                                                  |
+//| The point of interest here is the ADAPTIVE TARGET: not just the     |
+//| number, but the arithmetic behind it, which the why-strings already |
+//| carry in the form "target = base x factor x relief [tags]". Also    |
+//| exported is the hand-off state, so the dashboard can show when a    |
+//| position is deliberately being left alone to ride its own TP.       |
+//+------------------------------------------------------------------+
+void WriteTelemetry(const MarketView &v)
+  {
+   if(!InpTelemetry || !Tel.Enabled() || !Tel.Due())
+      return;
+
+   Tel.Begin();
+   Tel.SymbolBlock(_Symbol);
+   Tel.AccountBlock();
+
+   bool alive[KM_EA_LAST];
+   for(int s = KM_EA_FIRST; s <= KM_EA_LAST; s++)
+      alive[s - KM_EA_FIRST] = Bus.Alive(s);
+   Tel.Roster("roster", alive, KM_EA_LAST - KM_EA_FIRST + 1);
+
+   Tel.Obj("view");
+   Tel.Bool("valid",   v.valid);
+   Tel.Num("score",    v.score, 1);
+   Tel.Str("regime",   KM_RegimeName(v.regime));
+   Tel.Str("vol",      KM_VolName(v.volState));
+   Tel.Num("atrRatio", v.atrRatio, 3);
+   Tel.Num("adx",      v.trendStrength, 1);
+   Tel.Bool("bullExhaust", v.bullExhaust);
+   Tel.Bool("bearExhaust", v.bearExhaust);
+   Tel.EndObj();
+
+   KMAgg b, sl, all, hb, hs;
+   Book.AggDirection(true,  b);
+   Book.AggDirection(false, sl);
+   Book.AggAll(all);
+   Book.AggSlot(KM_EA_HEDGE, true,  hb);
+   Book.AggSlot(KM_EA_HEDGE, false, hs);
+
+//--- each group: what it holds, what it must reach, and the workings
+   Tel.Arr("groups");
+
+   Tel.ArrObj();
+   Tel.Str("name", "BUY");
+   Tel.Int("legs", b.count);   Tel.Num("lots", b.lots, 2);
+   Tel.Num("profit", b.profit, 2);
+   Tel.Num("target", g_tgtBuy, 2);
+   Tel.Str("workings", g_whyBuy);
+   Tel.Bool("ridingOwnTp", StillEntryTpPhase(true));
+   Tel.Bool("gridOpen", Book.GridOpen(true));
+   Tel.Int("legsWithTp", Book.CountWithTP(true));
+   Tel.EndObj();
+
+   Tel.ArrObj();
+   Tel.Str("name", "SELL");
+   Tel.Int("legs", sl.count);  Tel.Num("lots", sl.lots, 2);
+   Tel.Num("profit", sl.profit, 2);
+   Tel.Num("target", g_tgtSell, 2);
+   Tel.Str("workings", g_whySell);
+   Tel.Bool("ridingOwnTp", StillEntryTpPhase(false));
+   Tel.Bool("gridOpen", Book.GridOpen(false));
+   Tel.Int("legsWithTp", Book.CountWithTP(false));
+   Tel.EndObj();
+
+   Tel.ArrObj();
+   Tel.Str("name", "RECOVERY");
+   Tel.Int("legs", hb.count + hs.count);
+   Tel.Num("lots", hb.lots + hs.lots, 2);
+   Tel.Num("profit", hb.profit + hs.profit, 2);
+   Tel.Num("target", g_tgtRecov, 2);
+   Tel.Str("workings", g_whyRecov);
+   Tel.EndObj();
+
+   Tel.ArrObj();
+   Tel.Str("name", "BOOK");
+   Tel.Int("legs", all.count); Tel.Num("lots", all.lots, 2);
+   Tel.Num("profit", all.profit, 2);
+   Tel.Num("target", g_tgtBook, 2);
+   Tel.Bool("ridingOwnTp", BookStillEntryTpPhase());
+   Tel.EndObj();
+
+   Tel.EndArr();
+
+   Tel.Obj("history");
+   Tel.Int("closes",     g_closes);
+   Tel.Str("lastAction", g_lastAction);
+   Tel.EndObj();
+
+   Tel.Obj("config");
+   Tel.Bool("respectEntryTp",   InpRespectEntryTP);
+   Tel.Int("manageFromLegs",    InpManageFromLegs);
+   Tel.Num("targetPerLot",      InpTargetPerLot, 2);
+   Tel.Num("minTarget",         InpMinTarget, 2);
+   Tel.Num("trendWithFactor",   InpTrendWithFactor, 2);
+   Tel.Num("trendAgainstFactor", InpTrendAgainstFactor, 2);
+   Tel.Num("rangeFactor",       InpRangeFactor, 2);
+   Tel.Num("exhaustFactor",     InpExhaustFactor, 2);
+   Tel.Int("depthReliefFrom",   InpDepthReliefFrom);
+   Tel.Num("depthReliefStep",   InpDepthReliefStep, 2);
+   Tel.Num("ageReliefPerHour",  InpAgeReliefPerHour, 2);
+   Tel.Bool("closeRecoveryGrp", InpCloseRecoveryGrp);
+   Tel.Bool("closeDirection",   InpCloseDirection);
+   Tel.Bool("closeWholeBook",   InpCloseWholeBook);
+   Tel.EndObj();
+
+   Tel.HealthBlock();
+   Tel.End();
+  }
+
+//+------------------------------------------------------------------+
 void Panel(const MarketView &v)
   {
+//--- exported here because every OnTick exit path reaches Panel()
+   WriteTelemetry(v);
+
    if(!InpShowPanel)
       return;
 

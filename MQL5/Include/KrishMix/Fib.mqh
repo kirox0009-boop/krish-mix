@@ -154,6 +154,13 @@ public:
       //--- kind; A is the next one of C's kind. That is one impulse plus
       //--- one pullback, which is exactly what the projection needs.
       KMSwing c, b, a;
+      //--- zeroed up front. b and a are only filled inside the search loop
+      //--- below, so without this the compiler cannot prove they are
+      //--- initialised by the time the projection reads them.
+      ZeroMemory(c);
+      ZeroMemory(b);
+      ZeroMemory(a);
+
       if(!st.Swing(0, c))
         {
          m_setup.reason = "no pivots";

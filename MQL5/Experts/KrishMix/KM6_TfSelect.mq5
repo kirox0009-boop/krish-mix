@@ -31,6 +31,8 @@
 #include <KrishMix\Common.mqh>
 #include <KrishMix\StateBus.mqh>
 #include <KrishMix\TfSelect.mqh>
+//--- read-only state export for the dashboard
+#include <KrishMix\Telemetry.mqh>
 
 //+------------------------------------------------------------------+
 input group "=== Symbols ==="
@@ -59,12 +61,17 @@ input bool            InpAllowScalp     = true;   // Allow SCALP
 input bool            InpAllowIntraday  = true;   // Allow INTRADAY
 input bool            InpAllowSwing     = true;   // Allow SWING
 
+input group "=== Dashboard telemetry (read only) ==="
+input bool            InpTelemetry      = true;   // Export state for the dashboard
+input int             InpTelemetrySec   = 15;     // Seconds between snapshots
+
 input group "=== Operation ==="
 input int             InpRecheckSeconds = 60;     // Re-decide no more often than this
 input bool            InpLogChanges     = true;   // Log every style change
 input bool            InpShowPanel      = true;   // On-chart panel
 
 //+------------------------------------------------------------------+
+CKMTelemetry  Tel;          // dashboard export, read only
 string        g_symbols[];
 int           g_nSymbols = 0;
 CKMTfSelect   g_sel[KM_MAX_SYMBOLS];
@@ -141,6 +148,14 @@ int OnInit()
                InpSpreadScalpMax, InpSpreadIntraMax, EnumToString(InpRefTf));
    Print("KM6 places no orders. It publishes KM.<symbol>.style and KM.<symbol>.worktf.");
 
+   if(InpTelemetry)
+     {
+      if(Tel.Init("KM6", "PORTFOLIO", InpTelemetrySec))
+         PrintFormat("KM6 telemetry -> MQL5\\Files\\%s", Tel.FileName());
+      else
+         Print("KM6 telemetry could not start: ", Tel.LastError());
+     }
+
    return(INIT_SUCCEEDED);
   }
 
@@ -195,8 +210,77 @@ void OnTick()
   }
 
 //+------------------------------------------------------------------+
+//| Dashboard export. Read only.                                      |
+//|                                                                  |
+//| Exports the style decision per symbol together with the three       |
+//| competing scores and the reason text, so the dashboard can show     |
+//| WHY a symbol is on swing rather than scalp - which is nearly always |
+//| the spread-economics term.                                          |
+//+------------------------------------------------------------------+
+void WriteTelemetry(void)
+  {
+   if(!InpTelemetry || !Tel.Enabled() || !Tel.Due())
+      return;
+
+   Tel.Begin();
+
+   Tel.Arr("symbols");
+   for(int i = 0; i < g_nSymbols; i++)
+     {
+      Tel.ArrObj();
+      Tel.Str("symbol", g_symbols[i]);
+      Tel.Bool("ready", g_ready[i]);
+
+      if(g_ready[i])
+        {
+         KMTfDecision d;
+         g_sel[i].Decision(d);
+         Tel.Bool("valid", d.valid);
+         if(d.valid)
+           {
+            Tel.Str("style",         KM_StyleName(d.style));
+            Tel.Str("timeframe",     EnumToString(d.tf));
+            Tel.Num("scalpScore",    d.scalpScore, 0);
+            Tel.Num("intradayScore", d.intradayScore, 0);
+            Tel.Num("swingScore",    d.swingScore, 0);
+            Tel.Num("spreadCost",    d.spreadCost, 3);
+            Tel.Num("atrRatio",      d.atrRatio, 3);
+            Tel.Num("adx",           d.adxHigh, 1);
+            Tel.Bool("liquidSession", d.liquidSession);
+            Tel.Int("serverHour",    d.serverHour);
+            Tel.Str("reason",        d.reason);
+           }
+        }
+      else
+         Tel.Str("issue", g_sel[i].LastIssue());
+
+      Tel.EndObj();
+     }
+   Tel.EndArr();
+
+   Tel.Obj("config");
+   Tel.Num("spreadScalpMax", InpSpreadScalpMax, 3);
+   Tel.Num("spreadIntraMax", InpSpreadIntraMax, 3);
+   Tel.Str("refTf",          EnumToString(InpRefTf));
+   Tel.Str("trendTf",        EnumToString(InpTrendTf));
+   Tel.Num("volLow",         InpVolLow, 2);
+   Tel.Num("volHigh",        InpVolHigh, 2);
+   Tel.Num("adxTrending",    InpAdxTrending, 1);
+   Tel.Bool("allowScalp",    InpAllowScalp);
+   Tel.Bool("allowIntraday", InpAllowIntraday);
+   Tel.Bool("allowSwing",    InpAllowSwing);
+   Tel.EndObj();
+
+   Tel.HealthBlock();
+   Tel.End();
+  }
+
+//+------------------------------------------------------------------+
 void Panel()
   {
+//--- exported here because every OnTick exit path reaches Panel()
+   WriteTelemetry();
+
    if(!InpShowPanel)
       return;
 

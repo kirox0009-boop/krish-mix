@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>KrishMix · Live</title>
+<link rel="stylesheet" href="./css/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230d1017'/><path d='M7 22 L13 12 L19 17 L25 8' stroke='%236ee7f9' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+
+<!-- ─────────────────────────  top bar  ───────────────────────── -->
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M6 23 L13 12 L19 17.5 L26 7" fill="none" stroke="currentColor"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div class="brand-text">
+      <span class="brand-name">KrishMix</span>
+      <span class="brand-sub" id="brandSub">connecting…</span>
+    </div>
+  </div>
+
+  <div class="topbar-mid">
+    <div class="roster" id="roster" title="Which suite members are alive"></div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="seg" id="rangeSeg" role="group" aria-label="Chart range">
+      <button data-range="1h">1H</button>
+      <button data-range="6h">6H</button>
+      <button data-range="24h" class="on">24H</button>
+      <button data-range="7d">7D</button>
+      <button data-range="30d">30D</button>
+    </div>
+    <span class="pill" id="sourcePill">—</span>
+    <span class="live" id="liveDot" title="Stream status"><i></i><span>live</span></span>
+    <button class="devbtn" id="devBtn" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" class="ico" aria-hidden="true">
+        <path d="M17 10V8a5 5 0 0 0-10 0v2" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round"/>
+        <rect x="4.5" y="10" width="15" height="10.5" rx="2.5" fill="none"
+              stroke="currentColor" stroke-width="2"/>
+      </svg>
+      <span id="devBtnLabel">Developer</span>
+    </button>
+  </div>
+</header>
+
+<!-- ─────────────────────────  banners  ───────────────────────── -->
+<div class="banners" id="banners"></div>
+
+<main class="wrap">
+
+  <!-- KPIs -->
+  <section class="kpis" id="kpis"></section>
+
+  <!-- charts -->
+  <section class="grid charts">
+    <article class="card span2">
+      <div class="card-h">
+        <h2>Equity &amp; balance</h2>
+        <div class="legend" id="legEquity"></div>
+      </div>
+      <div class="chart" id="chartEquity"></div>
+    </article>
+
+    <article class="card">
+      <div class="card-h"><h2>Floating P&amp;L</h2><div class="legend" id="legFloat"></div></div>
+      <div class="chart" id="chartFloat"></div>
+    </article>
+
+    <article class="card">
+      <div class="card-h"><h2>Drawdown</h2><div class="legend" id="legDd"></div></div>
+      <div class="chart" id="chartDd"></div>
+    </article>
+
+    <article class="card span2">
+      <div class="card-h">
+        <h2>Realised P&amp;L (closed trades)</h2>
+        <div class="legend" id="legReal"></div>
+      </div>
+      <div class="chart" id="chartReal"></div>
+    </article>
+  </section>
+
+  <!-- live positions -->
+  <section class="card">
+    <div class="card-h">
+      <h2>Live trades</h2>
+      <span class="hint" id="posHint"></span>
+    </div>
+    <div class="tablewrap" id="positions"></div>
+  </section>
+
+  <!-- exposure by strategy -->
+  <section class="grid two">
+    <article class="card">
+      <div class="card-h">
+        <h2>Open exposure by strategy</h2>
+        <span class="hint">what is running right now</span>
+      </div>
+      <div id="exposure"></div>
+    </article>
+
+    <article class="card">
+      <div class="card-h">
+        <h2>Realised by strategy</h2>
+        <span class="hint">closed-trade scoreboard</span>
+      </div>
+      <div class="tablewrap" id="stratStats"></div>
+    </article>
+  </section>
+
+  <!-- bots -->
+  <section class="card">
+    <div class="card-h">
+      <h2>Bots</h2>
+      <span class="hint" id="botsHint">what each EA is doing</span>
+    </div>
+    <div class="bots" id="bots"></div>
+  </section>
+
+  <!-- portfolio -->
+  <section class="card" id="portfolioCard" hidden>
+    <div class="card-h">
+      <h2>Portfolio</h2>
+      <span class="hint">cross-asset view from EA5</span>
+    </div>
+    <div class="tablewrap" id="portfolio"></div>
+  </section>
+
+  <!-- closed trades -->
+  <section class="card">
+    <div class="card-h">
+      <h2>Closed trades</h2>
+      <span class="hint" id="tradesHint"></span>
+    </div>
+    <div class="tablewrap" id="trades"></div>
+  </section>
+
+  <footer class="foot">
+    <span id="footInfo"></span>
+    <span class="foot-ro">read only · this dashboard cannot place, modify or close an order</span>
+  </footer>
+</main>
+
+<!-- ─────────────────────  developer mode dialog  ───────────────────── -->
+<div class="modal" id="devModal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="devTitle">
+    <h3 id="devTitle">Developer mode</h3>
+    <p class="modal-sub" id="devSub">
+      Enter the PIN to reveal the reasoning behind every decision — scores,
+      indicator values, thresholds and the full playbook narrative.
+    </p>
+
+    <form id="devForm" autocomplete="off">
+      <input id="devPin" type="password" inputmode="numeric" placeholder="PIN"
+             aria-label="Developer PIN" maxlength="32">
+      <div class="modal-err" id="devErr" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="devCancel">Cancel</button>
+        <button type="submit" class="btn primary" id="devGo">Unlock</button>
+      </div>
+    </form>
+
+    <div id="devUnlocked" hidden>
+      <div class="unlocked-note">
+        Developer mode is <strong>on</strong>. Everything below is visible.
+        <span id="devExpiry"></span>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="devClose">Close</button>
+        <button type="button" class="btn danger" id="devLock">Lock again</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>

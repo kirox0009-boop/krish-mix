@@ -46,4 +46,10 @@ InpAdxPeriod=14
 InpAtrPeriod=14
 InpDonchianPeriod=40
 InpCrossCheckEA1=false
+; --- Dashboard telemetry (read only) ---
+; Writes a JSON snapshot to MQL5\Files\KrishMix\telemetry for the web
+; dashboard. Places no orders and changes no trading behaviour.
+InpTelemetry=true
+InpTelemetrySec=5
+;
 InpShowPanel=true

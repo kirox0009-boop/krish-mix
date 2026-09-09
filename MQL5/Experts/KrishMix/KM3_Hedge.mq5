@@ -49,6 +49,8 @@
 #include <KrishMix\Signals.mqh>
 #include <KrishMix\Positions.mqh>
 #include <KrishMix\Execution.mqh>
+//--- read-only state export for the dashboard
+#include <KrishMix\Telemetry.mqh>
 
 //+------------------------------------------------------------------+
 enum ENUM_KM3_TRIGGER
@@ -112,11 +114,16 @@ input int              InpAdxPeriod        = 14;    // ADX period
 input int              InpAtrPeriod        = 14;    // ATR period
 input int              InpDonchianPeriod   = 40;    // Donchian lookback
 
+input group "=== Dashboard telemetry (read only) ==="
+input bool             InpTelemetry        = true;  // Export state for the dashboard
+input int              InpTelemetrySec     = 5;     // Seconds between snapshots
+
 input group "=== Display ==="
 input bool             InpShowPanel        = true;  // On-chart panel
 
 //+------------------------------------------------------------------+
-CKMBus     Bus;
+CKMBus       Bus;
+CKMTelemetry Tel;      // dashboard export, read only
 CKMSignals Sig;
 CKMBook    Book;
 CKMExec    Exec;
@@ -202,6 +209,14 @@ int OnInit()
                InpLockRatio, horizon, InpMaxHedgeLot, InpMaxHedgeVsBasket,
                (InpMaxHedgeTotal > 0.0 ? DoubleToString(InpMaxHedgeTotal, 2) : "unlimited"));
    Print("KM3: a SHORTER recovery horizon means a BIGGER lot. This is the input to tune first.");
+
+   if(InpTelemetry)
+     {
+      if(Tel.Init("KM3", _Symbol, InpTelemetrySec))
+         PrintFormat("KM3 telemetry -> MQL5\\Files\\%s", Tel.FileName());
+      else
+         Print("KM3 telemetry could not start: ", Tel.LastError());
+     }
 
    return(INIT_SUCCEEDED);
   }
@@ -515,8 +530,110 @@ void Publish(void)
   }
 
 //+------------------------------------------------------------------+
+//| Dashboard export. Read only.                                      |
+//|                                                                  |
+//| The interesting content is the sizing breakdown: how much of the   |
+//| order is the lock that neutralises further bleed and how much is    |
+//| the surplus that actually earns the drawdown back, plus the exact   |
+//| reason when the conviction gate refused to fire.                    |
+//+------------------------------------------------------------------+
+void WriteTelemetry(const MarketView &v)
+  {
+   if(!InpTelemetry || !Tel.Enabled() || !Tel.Due())
+      return;
+
+   Tel.Begin();
+   Tel.SymbolBlock(_Symbol);
+   Tel.AccountBlock();
+
+   bool alive[KM_EA_LAST];
+   for(int s = KM_EA_FIRST; s <= KM_EA_LAST; s++)
+      alive[s - KM_EA_FIRST] = Bus.Alive(s);
+   Tel.Roster("roster", alive, KM_EA_LAST - KM_EA_FIRST + 1);
+
+   Tel.Obj("view");
+   Tel.Bool("valid",   v.valid);
+   Tel.Num("score",    v.score, 1);
+   Tel.Str("regime",   KM_RegimeName(v.regime));
+   Tel.Str("vol",      KM_VolName(v.volState));
+   Tel.Num("atr",      v.atr, _Digits);
+   Tel.Num("atrRatio", v.atrRatio, 3);
+   Tel.Num("adx",      v.trendStrength, 1);
+   Tel.Bool("mtfAgree",    v.mtfAgree);
+   Tel.Bool("bullExhaust", v.bullExhaust);
+   Tel.Bool("bearExhaust", v.bearExhaust);
+   Tel.EndObj();
+
+//--- the baskets this EA is watching, and its own rescue legs
+   KMAgg b, sl, hb, hs;
+   Book.AggDirection(true,  b);
+   Book.AggDirection(false, sl);
+   Book.AggSlot(KM_EA_HEDGE, true,  hb);
+   Book.AggSlot(KM_EA_HEDGE, false, hs);
+
+   Tel.Obj("baskets");
+   Tel.Obj("buy");
+   Tel.Int("legs", b.count);  Tel.Num("lots", b.lots, 2);
+   Tel.Num("profit", b.profit, 2); Tel.Num("avgPrice", b.avgPrice, _Digits);
+   Tel.EndObj();
+   Tel.Obj("sell");
+   Tel.Int("legs", sl.count); Tel.Num("lots", sl.lots, 2);
+   Tel.Num("profit", sl.profit, 2); Tel.Num("avgPrice", sl.avgPrice, _Digits);
+   Tel.EndObj();
+   Tel.EndObj();
+
+   Tel.Obj("recoveryLegs");
+   Tel.Int("buyCount",  hb.count);  Tel.Num("buyLots",  hb.lots, 2);
+   Tel.Int("sellCount", hs.count);  Tel.Num("sellLots", hs.lots, 2);
+   Tel.Num("profit",    hb.profit + hs.profit, 2);
+   Tel.EndObj();
+
+//--- the current plan, fired or not
+   Tel.Obj("plan");
+   Tel.Bool("wouldFire", g_plan.fire);
+   Tel.Str("losingSide", (g_plan.losingDir == KM_DIR_BUY ? "BUY" :
+                          (g_plan.losingDir == KM_DIR_SELL ? "SELL" : "-")));
+   Tel.Str("hedgeSide",  (g_plan.hedgeIsBuy ? "BUY" : "SELL"));
+   Tel.Num("drawdown",   g_plan.drawdown, 2);
+   Tel.Num("excursion",  g_plan.excursion, _Digits);
+   Tel.Num("lockLot",    g_plan.lockLot, 2);
+   Tel.Num("recoveryLot", g_plan.recoveryLot, 2);
+   Tel.Num("lot",        g_plan.lot, 2);
+   Tel.Int("legNo",      g_plan.legNo);
+   Tel.Str("reason",     g_plan.reason);
+   Tel.EndObj();
+
+   Tel.Obj("history");
+   Tel.Int("legsFired",   g_legsFired);
+   Tel.Int("lastFiredTs", (long)g_lastHedgeTime);
+   Tel.Num("lastFiredPrice", g_lastHedgePrice, _Digits);
+   Tel.EndObj();
+
+   Tel.Obj("config");
+   Tel.Str("triggerMode",    EnumToString(InpTriggerMode));
+   Tel.Num("triggerMoney",   InpTriggerMoney, 2);
+   Tel.Num("triggerAtrMult", InpTriggerAtrMult, 2);
+   Tel.Str("horizonMode",    EnumToString(InpHorizonMode));
+   Tel.Num("recoveryOverPrice", InpRecoveryOverPrice, 2);
+   Tel.Num("recoveryAtrTarget", InpRecoveryAtrTarget, 2);
+   Tel.Num("lockRatio",      InpLockRatio, 2);
+   Tel.Num("minScore",       InpMinScore, 0);
+   Tel.Num("minAdx",         InpMinAdx, 0);
+   Tel.Num("maxHedgeLot",    InpMaxHedgeLot, 2);
+   Tel.Num("maxHedgeVsBasket", InpMaxHedgeVsBasket, 1);
+   Tel.Bool("blockOnExhaustion", InpBlockOnExhaustion);
+   Tel.EndObj();
+
+   Tel.HealthBlock();
+   Tel.End();
+  }
+
+//+------------------------------------------------------------------+
 void Panel(const MarketView &v)
   {
+//--- exported here because every OnTick exit path reaches Panel()
+   WriteTelemetry(v);
+
    if(!InpShowPanel)
       return;
 

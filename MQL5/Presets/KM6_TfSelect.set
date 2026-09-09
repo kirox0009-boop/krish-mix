@@ -25,6 +25,12 @@ InpLiquidTo=20
 InpAllowScalp=true
 InpAllowIntraday=true
 InpAllowSwing=true
+; --- Dashboard telemetry (read only) ---
+; Writes a JSON snapshot to MQL5\Files\KrishMix\telemetry for the web
+; dashboard. Places no orders and changes no trading behaviour.
+InpTelemetry=true
+InpTelemetrySec=15
+;
 InpRecheckSeconds=60
 InpLogChanges=true
 InpShowPanel=true
