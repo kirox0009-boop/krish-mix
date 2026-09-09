@@ -45,6 +45,9 @@
 #include <KrishMix\Structure.mqh>
 #include <KrishMix\Fib.mqh>
 #include <KrishMix\Playbook.mqh>
+//--- read-only state export for the dashboard. Nothing in this module can
+//--- place, modify or close an order.
+#include <KrishMix\Telemetry.mqh>
 
 //+------------------------------------------------------------------+
 enum ENUM_KM1_TPMODE
@@ -173,6 +176,13 @@ input int             InpFreshMaxLegs     = 5;     // Legs counted as fully matu
 input double          InpFreshMaxExtAtr   = 12.0;  // Extension counted as fully mature
 input int             InpSwingStrength    = 3;     // Pivot bars required each side
 
+input group "=== Dashboard telemetry (read only) ==="
+//--- Writes this EA's reasoning to MQL5\Files\KrishMix\telemetry so the
+//--- dashboard backend can read it. Purely an export: it never touches an
+//--- order, and turning it off changes nothing about how the EA trades.
+input bool            InpTelemetry        = true;  // Export state for the dashboard
+input int             InpTelemetrySec     = 5;     // Seconds between snapshots
+
 input group "=== Display ==="
 input bool            InpShowPanel        = true;  // On-chart panel
 input bool            InpShowNarrative    = true;  // Show the playbook's five-step reasoning
@@ -188,6 +198,7 @@ CKMStructure StructEntry;   // on the chart timeframe: fresh-trend gate + fib pi
 CKMStructure StructSwing;   // on InpIbTimeframe: the inside-bar setup
 CKMFib       Fib;
 CKMPlaybook  Play;
+CKMTelemetry Tel;           // dashboard export, read only
 
 int        g_hAtrSwing     = INVALID_HANDLE;  // ATR on the inside-bar timeframe
 bool       g_structOk      = false;
@@ -449,6 +460,18 @@ int OnInit()
                (InpUsePlaybook ? "on" : "off"),
                EnumToString(InpPbHighTf), EnumToString(InpPbMidTf), EnumToString(InpPbLowTf),
                (InpFreshTrendOnly ? "on" : "off"));
+
+//--- dashboard export. Full fidelity is written here on purpose: the
+//--- backend decides what a viewer is allowed to see, so anything held
+//--- back at this layer would simply be missing from developer mode too.
+   if(InpTelemetry)
+     {
+      if(Tel.Init("KM1", _Symbol, InpTelemetrySec))
+         PrintFormat("KM1 telemetry -> MQL5\\Files\\%s (every %ds)",
+                     Tel.FileName(), InpTelemetrySec);
+      else
+         Print("KM1 telemetry could not start: ", Tel.LastError());
+     }
 
    PrintFormat("KM1 Entry v%s | %s %s | magic base %I64d -> buy %I64d / sell %I64d",
                KM_VERSION, _Symbol, EnumToString((ENUM_TIMEFRAMES)Period()),
@@ -1058,8 +1081,310 @@ void TryEnter(const EntryCandidate &cand, const MarketView &v)
   }
 
 //+------------------------------------------------------------------+
+//| Dashboard export.                                                 |
+//|                                                                  |
+//| Writes everything this EA knows: the indicator reading, the gate    |
+//| outcome and why, which layer qualified and which actually entered,  |
+//| the structure and trend maturity, the inside-bar and fib setups,    |
+//| and the playbook's five-step narrative verbatim.                    |
+//|                                                                  |
+//| Full fidelity is deliberate. The dashboard backend gates what a     |
+//| viewer sees behind a PIN, so anything censored at this layer would   |
+//| be missing from developer mode as well - the redaction belongs       |
+//| where the authentication is, not here.                              |
+//|                                                                  |
+//| Called last in OnTick and reads only already-computed state, so it   |
+//| cannot influence a single trading decision.                         |
+//+------------------------------------------------------------------+
+void WriteTelemetry(const MarketView &v)
+  {
+   if(!InpTelemetry || !Tel.Enabled() || !Tel.Due())
+      return;
+
+   Tel.Begin();
+
+   Tel.SymbolBlock(_Symbol);
+   Tel.AccountBlock();
+
+//--- which suite members are alive on this symbol
+   bool alive[KM_EA_LAST];
+   for(int s = KM_EA_FIRST; s <= KM_EA_LAST; s++)
+      alive[s - KM_EA_FIRST] = Bus.Alive(s);
+   Tel.Roster("roster", alive, KM_EA_LAST - KM_EA_FIRST + 1);
+
+//=== the indicator reading =========================================
+   Tel.Obj("view");
+   Tel.Bool("valid",     v.valid);
+   Tel.Num("score",      v.score, 1);
+   Tel.Str("regime",     KM_RegimeName(v.regime));
+   Tel.Str("vol",        KM_VolName(v.volState));
+   Tel.Num("atr",        v.atr, _Digits);
+   Tel.Num("atrRatio",   v.atrRatio, 3);
+   Tel.Num("adx",        v.trendStrength, 1);
+   Tel.Num("plusDI",     v.plusDI, 1);
+   Tel.Num("minusDI",    v.minusDI, 1);
+   Tel.Num("rsi",        v.rsi, 1);
+   Tel.Num("stoch",      v.stoch, 1);
+   Tel.Num("macdHist",   v.macdHist, _Digits);
+   Tel.Num("macdSlope",  v.macdSlope, _Digits);
+   Tel.Num("bbPercent",  v.bbPercent, 3);
+   Tel.Num("bbWidth",    v.bbWidth, 5);
+   Tel.Bool("mtfAgree",  v.mtfAgree);
+   Tel.Bool("bullExhaust", v.bullExhaust);
+   Tel.Bool("bearExhaust", v.bearExhaust);
+   Tel.Num("swingHigh",  v.swingHigh, _Digits);
+   Tel.Num("swingLow",   v.swingLow, _Digits);
+   Tel.Num("emaFast",    v.emaFast, _Digits);
+   Tel.Num("emaSlow",    v.emaSlow, _Digits);
+   Tel.Num("emaFilter",  v.emaFilter, _Digits);
+   Tel.Num("bbUpper",    v.bbUpper, _Digits);
+   Tel.Num("bbLower",    v.bbLower, _Digits);
+   Tel.EndObj();
+
+//=== the gate: what it decided and what held it back ================
+   Tel.Obj("gate");
+   Tel.Int("evaluated",   g_evaluated);
+   Tel.Int("entries",     g_entryCount);
+   Tel.Str("lastTrigger", g_lastTrigger);
+   Tel.Str("lastBlock",   g_lastBlock);
+   Tel.Num("scoreBest",   g_scoreBest, 1);
+   Tel.Num("adxBest",     g_adxBest, 1);
+   Tel.Int("lastEntryTs", (long)g_lastEntryTime);
+
+   Tel.Obj("floors");
+   Tel.Num("minScore",        InpMinScore, 1);
+   Tel.Num("minAdx",          InpMinAdx, 1);
+   Tel.Num("adxTrendLevel",   InpAdxTrendLevel, 1);
+   Tel.Num("reversalStretch", InpReversalStretch, 1);
+   Tel.Num("maxSpreadPoints", InpMaxSpreadPoints, 0);
+   Tel.Int("cooldownSec",     InpCooldownSeconds);
+   Tel.EndObj();
+
+//--- the block histogram, which is the answer to "why no entry"
+   string bNames[KM1_B_COUNT];
+   long   bCounts[KM1_B_COUNT];
+   for(int i = 0; i < KM1_B_COUNT; i++)
+     {
+      bNames[i]  = BlockName(i);
+      bCounts[i] = g_block[i];
+     }
+   Tel.CounterArray("blocks", bNames, bCounts, KM1_B_COUNT, true);
+   Tel.EndObj();
+
+//=== per-layer attribution: qualified vs actually entered ===========
+   Tel.Arr("layers");
+   for(int i = 0; i < KM1_T_COUNT; i++)
+     {
+      Tel.ArrObj();
+      Tel.Str("name",      TriggerName(i));
+      Tel.Int("qualified", g_trigFired[i]);
+      Tel.Int("entered",   g_trigCount[i]);
+
+      bool on = true;
+      if(i == KM1_T_PULLBACK)  on = InpUsePullback;
+      if(i == KM1_T_BREAKOUT)  on = InpUseBreakout;
+      if(i == KM1_T_REVERSAL)  on = InpUseReversal;
+      if(i == KM1_T_INSIDEBAR) on = InpUseInsideBar;
+      if(i == KM1_T_FIBREV)    on = InpUseFibRev;
+      if(i == KM1_T_PLAYBOOK)  on = InpUsePlaybook;
+      Tel.Bool("enabled", on);
+      Tel.EndObj();
+     }
+   Tel.EndArr();
+
+//=== structure and trend maturity ==================================
+   Tel.Obj("structure");
+   Tel.Bool("ready", g_structOk && StructEntry.Valid());
+   Tel.Str("summary", StructEntry.Summary());
+
+   if(g_structOk && StructEntry.Valid())
+     {
+      KMTrendState ts;
+      StructEntry.Trend(ts);
+      Tel.Obj("trend");
+      Tel.Str("dir",          (ts.dir == KM_DIR_BUY ? "UP" :
+                               (ts.dir == KM_DIR_SELL ? "DOWN" : "RANGE")));
+      Tel.Num("maturity",     ts.maturity, 1);
+      Tel.Int("legs",         ts.legsCompleted);
+      Tel.Num("extensionAtr", ts.extensionAtr, 2);
+      Tel.Num("retracePct",   ts.retracePct, 1);
+      Tel.Num("originPrice",  ts.originPrice, _Digits);
+      Tel.Int("originBar",    ts.originBar);
+      Tel.Bool("isFresh",     ts.isFresh);
+      Tel.Bool("nearCorner",  ts.nearCorner);
+      Tel.Bool("justFlipped", ts.justFlipped);
+      Tel.EndObj();
+     }
+   Tel.EndObj();
+
+//=== inside bar setup ==============================================
+   Tel.Obj("insideBar");
+   Tel.Bool("enabled", InpUseInsideBar);
+   Tel.Str("timeframe", EnumToString(InpIbTimeframe));
+
+   if(InpUseInsideBar && g_swingOk && StructSwing.Valid())
+     {
+      KMInsideBar ib;
+      StructSwing.InsideBar(ib);
+      Tel.Bool("found", ib.found);
+      if(ib.found)
+        {
+         Tel.Num("babyLow",     ib.babyLow, _Digits);
+         Tel.Num("babyHigh",    ib.babyHigh, _Digits);
+         Tel.Num("motherLow",   ib.motherLow, _Digits);
+         Tel.Num("motherHigh",  ib.motherHigh, _Digits);
+         Tel.Num("motherRange", ib.motherRange, _Digits);
+         Tel.Num("babyRange",   ib.babyRange, _Digits);
+         Tel.Bool("atSwingHigh", ib.atSwingHigh);
+         Tel.Bool("atSwingLow",  ib.atSwingLow);
+         Tel.Bool("brokenDown",  ib.brokenDown);
+         Tel.Bool("brokenUp",    ib.brokenUp);
+         Tel.Int("ageBars",      ib.ageBars);
+        }
+     }
+   else
+      Tel.Bool("found", false);
+   Tel.EndObj();
+
+//=== trend-based fib ===============================================
+   Tel.Obj("fib");
+   Tel.Bool("enabled", InpUseFibRev);
+   Tel.Str("summary", Fib.Summary());
+
+   if(InpUseFibRev)
+     {
+      KMFibSetup fs;
+      Fib.Setup(fs);
+      Tel.Bool("valid", fs.valid);
+      Tel.Str("reason", fs.reason);
+      if(fs.valid)
+        {
+         Tel.Bool("impulseUp",   fs.impulseUp);
+         Tel.Str("reversalDir",  (fs.reversalDir == KM_DIR_BUY ? "BUY" : "SELL"));
+         Tel.Num("priceA",       fs.priceA, _Digits);
+         Tel.Num("priceB",       fs.priceB, _Digits);
+         Tel.Num("priceC",       fs.priceC, _Digits);
+         Tel.Num("impulseSize",  fs.impulseSize, _Digits);
+
+         Tel.Arr("levels");
+         for(int i = 0; i < KM_FIB_LEVELS; i++)
+           {
+            Tel.ArrObj();
+            Tel.Num("ratio", fs.ratio[i], 3);
+            Tel.Num("price", fs.level[i], _Digits);
+            Tel.EndObj();
+           }
+         Tel.EndArr();
+
+         Tel.Bool("atLevel",        fs.atLevel);
+         Tel.Int("nearestIdx",      fs.nearestIdx);
+         Tel.Num("nearestPrice",    fs.nearestPrice, _Digits);
+         Tel.Num("nearestDist",     fs.nearestDist, _Digits);
+         Tel.Bool("reachedDeepest", fs.reachedDeepest);
+        }
+     }
+   Tel.EndObj();
+
+//=== the five-step playbook ========================================
+   Tel.Obj("playbook");
+   Tel.Bool("enabled", InpUsePlaybook);
+   Tel.Bool("ready",   g_playOk);
+
+   if(InpUsePlaybook && g_playOk)
+     {
+      PlaybookView pv;
+      Play.View(pv);
+      Tel.Bool("valid", pv.valid);
+      Tel.Str("summary", Play.Summary());
+
+      if(pv.valid)
+        {
+         Tel.Str("htfBias",     KM_HtfName(pv.htfBias));
+         Tel.Num("htfMaturity", pv.htfMaturity, 1);
+         Tel.Bool("htfFresh",   pv.htfFresh);
+
+         Tel.Str("edge",        KM_EdgeName(pv.edge));
+         Tel.Str("dir",         (pv.dir == KM_DIR_BUY ? "LONG" :
+                                 (pv.dir == KM_DIR_SELL ? "SHORT" : "-")));
+         Tel.Num("confidence",  pv.confidence, 1);
+         Tel.Int("confluences", pv.confluences);
+
+         Tel.Bool("hasLevel", pv.hasLevel);
+         if(pv.hasLevel)
+           {
+            Tel.Num("levelPrice",    pv.levelPrice, _Digits);
+            Tel.Int("levelTouches",  pv.levelTouches);
+            Tel.Bool("levelIsRes",   pv.levelIsResistance);
+            Tel.Num("levelStrength", pv.levelStrength, 1);
+            Tel.Num("levelDistAtr",  pv.levelDistAtr, 2);
+           }
+
+         Tel.Bool("hasLine", pv.hasLine);
+         if(pv.hasLine)
+           {
+            Tel.Bool("lineIsSupport", pv.lineIsSupport);
+            Tel.Num("linePrice",      pv.linePrice, _Digits);
+            Tel.Num("lineDistAtr",    pv.lineDistAtr, 2);
+           }
+
+         Tel.Bool("vwapValid", pv.vwapValid);
+         if(pv.vwapValid)
+           {
+            Tel.Num("vwapPrice",  pv.vwapPrice, _Digits);
+            Tel.Num("vwapDistSd", pv.vwapDistSd, 2);
+            Tel.Bool("aboveVwap", pv.aboveVwap);
+           }
+
+         Tel.Bool("aboveMa",    pv.aboveMa);
+         Tel.Num("maValue",     pv.maValue, _Digits);
+         Tel.Str("divergence",  pv.divergence);
+         Tel.Bool("divBull",    pv.divBull);
+         Tel.Bool("divBear",    pv.divBear);
+         Tel.Str("patterns",    pv.patterns);
+         Tel.Bool("patBull",    pv.patBull);
+         Tel.Bool("patBear",    pv.patBear);
+
+         Tel.Str("style",     KM_StyleName(pv.style));
+         Tel.Str("workingTf", EnumToString(pv.workingTf));
+         Tel.Str("narrative", pv.narrative);
+        }
+     }
+   Tel.EndObj();
+
+//=== what this EA is currently holding =============================
+   KMAgg mb, ms;
+   Book.AggSlot(KM_EA_ENTRY, true,  mb);
+   Book.AggSlot(KM_EA_ENTRY, false, ms);
+
+   Tel.Obj("holdings");
+   Tel.Obj("buy");
+   Tel.Int("count",  mb.count);
+   Tel.Num("lots",   mb.lots, 2);
+   Tel.Num("profit", mb.profit, 2);
+   Tel.Num("avgPrice", mb.avgPrice, _Digits);
+   Tel.EndObj();
+   Tel.Obj("sell");
+   Tel.Int("count",  ms.count);
+   Tel.Num("lots",   ms.lots, 2);
+   Tel.Num("profit", ms.profit, 2);
+   Tel.Num("avgPrice", ms.avgPrice, _Digits);
+   Tel.EndObj();
+   Tel.EndObj();
+
+   Tel.HealthBlock();
+   Tel.End();
+  }
+
+//+------------------------------------------------------------------+
 void Panel(const MarketView &v)
   {
+//--- The dashboard snapshot is taken here rather than in OnTick because
+//--- every exit path from OnTick passes through this function, including
+//--- the early return while the market view is still warming up. That is
+//--- precisely a state worth seeing on the dashboard, and it must be
+//--- exported whether or not the on-chart panel itself is switched on.
+   WriteTelemetry(v);
+
    if(!InpShowPanel)
       return;
 

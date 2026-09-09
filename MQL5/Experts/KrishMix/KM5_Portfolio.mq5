@@ -52,6 +52,8 @@
 #include <KrishMix\Structure.mqh>
 #include <KrishMix\Execution.mqh>
 #include <KrishMix\Portfolio.mqh>
+//--- read-only state export for the dashboard
+#include <KrishMix\Telemetry.mqh>
 
 //+------------------------------------------------------------------+
 input group "=== Suite wiring (keep the magic base identical everywhere) ==="
@@ -112,12 +114,17 @@ input int             InpAdxPeriod        = 14;    // ADX period
 input int             InpAtrPeriod        = 14;    // ATR period
 input int             InpDonchianPeriod   = 40;    // Donchian lookback
 
+input group "=== Dashboard telemetry (read only) ==="
+input bool            InpTelemetry        = true;  // Export state for the dashboard
+input int             InpTelemetrySec     = 5;     // Seconds between snapshots
+
 input group "=== Display ==="
 input bool            InpShowPanel        = true;  // On-chart panel
 input int             InpLogSeconds       = 300;   // Log a portfolio summary every N seconds
 
 //+------------------------------------------------------------------+
 CKMPortfolio Pf;
+CKMTelemetry Tel;      // dashboard export, read only
 CKMSignals   Sig[KM_MAX_SYMBOLS];
 CKMStructure Struct[KM_MAX_SYMBOLS];
 CKMExec      Exec[KM_MAX_SYMBOLS];
@@ -217,6 +224,16 @@ int OnInit()
    PrintFormat("KM5 portfolio exit: %.2f per 1.00 lot, floor %.2f, from %d legs",
                InpPfTargetPerLot, InpPfMinTarget, InpPfManageFromLegs);
    Print("KM5: entries on one asset never block another. No SL, no equity rule, no halt.");
+
+//--- one combined document for the whole watchlist rather than one per
+//--- symbol: the cross-asset picture is the thing worth seeing here
+   if(InpTelemetry)
+     {
+      if(Tel.Init("KM5", "PORTFOLIO", InpTelemetrySec))
+         PrintFormat("KM5 telemetry -> MQL5\\Files\\%s", Tel.FileName());
+      else
+         Print("KM5 telemetry could not start: ", Tel.LastError());
+     }
 
    return(INIT_SUCCEEDED);
   }
@@ -659,8 +676,151 @@ void LogSummary(void)
   }
 
 //+------------------------------------------------------------------+
+//| Dashboard export. Read only, one document for the whole watchlist. |
+//|                                                                  |
+//| This is the only place the cross-asset picture exists: which symbol |
+//| is stuck, how deep, who has the conviction to help, and why an      |
+//| assist did or did not go out. Per-symbol EAs cannot see any of it.  |
+//+------------------------------------------------------------------+
+void WriteTelemetry(void)
+  {
+   if(!InpTelemetry || !Tel.Enabled() || !Tel.Due())
+      return;
+
+   KMPortfolioTotals tot;
+   Pf.Totals(tot);
+
+   Tel.Begin();
+   Tel.AccountBlock();
+
+   Tel.Obj("portfolio");
+   Tel.Int("symbolsHolding", tot.symbolsHolding);
+   Tel.Int("legs",           tot.legs);
+   Tel.Num("lots",           tot.lots, 2);
+   Tel.Num("profit",         tot.profit, 2);
+   Tel.Num("drawdown",       tot.drawdown, 2);
+   Tel.Num("target",         g_pfTarget, 2);
+   Tel.Int("assistLegs",     tot.assistLegs);
+   Tel.Num("assistLots",     tot.assistLots, 2);
+   Tel.Bool("anyGrid",       tot.anyGrid);
+   Tel.Bool("anyHedge",      tot.anyHedge);
+   Tel.Bool("ridingOwnTp",   Pf.StillEntryTpPhase());
+
+   if(tot.worstIdx >= 0)
+     {
+      KMSymbolState w;
+      if(Pf.State(tot.worstIdx, w))
+        {
+         Tel.Obj("stuck");
+         Tel.Str("symbol",   w.symbol);
+         Tel.Num("drawdown", tot.worstDrawdown, 2);
+         Tel.Int("legs",     w.legs);
+         Tel.Num("lots",     w.lots, 2);
+         Tel.Str("losingSide", (w.losingSide == KM_DIR_BUY ? "BUY" :
+                                (w.losingSide == KM_DIR_SELL ? "SELL" : "-")));
+         Tel.EndObj();
+        }
+     }
+   Tel.EndObj();
+
+//--- every symbol the suite is touching, tradable or merely discovered
+   Tel.Arr("symbols");
+   for(int i = 0; i < Pf.Count(); i++)
+     {
+      KMSymbolState st;
+      if(!Pf.State(i, st))
+         continue;
+
+      Tel.ArrObj();
+      Tel.Str("symbol",    st.symbol);
+      Tel.Bool("tradable", st.tradable);
+      Tel.Bool("isStuck",  (i == tot.worstIdx && tot.worstDrawdown > 0.0));
+      Tel.Int("legs",      st.legs);
+      Tel.Int("buyLegs",   st.buyLegs);
+      Tel.Int("sellLegs",  st.sellLegs);
+      Tel.Num("lots",      st.lots, 2);
+      Tel.Num("profit",    st.profit, 2);
+      Tel.Num("drawdown",  st.drawdown, 2);
+      Tel.Num("avgBuy",    st.avgBuy, 5);
+      Tel.Num("avgSell",   st.avgSell, 5);
+      Tel.Bool("gridOpen",  st.gridOpen);
+      Tel.Bool("hedgeOpen", st.hedgeOpen);
+      Tel.Int("assistLegs", st.assistLegs);
+      Tel.Num("assistLots", st.assistLots, 2);
+      Tel.Int("legsWithTp", st.legsWithTp);
+
+      //--- KM5's own reading of this symbol, when it has one
+      if(i < g_n && g_viewOk[i])
+        {
+         Tel.Obj("view");
+         Tel.Num("score",    g_view[i].score, 1);
+         Tel.Str("regime",   KM_RegimeName(g_view[i].regime));
+         Tel.Str("vol",      KM_VolName(g_view[i].volState));
+         Tel.Num("atr",      g_view[i].atr, 5);
+         Tel.Num("adx",      g_view[i].trendStrength, 1);
+         Tel.Bool("mtfAgree", g_view[i].mtfAgree);
+         Tel.Bool("bullExhaust", g_view[i].bullExhaust);
+         Tel.Bool("bearExhaust", g_view[i].bearExhaust);
+         Tel.EndObj();
+
+         //--- what an assist on this symbol would be worth, which is the
+         //--- number the overshoot guard actually judges
+         Tel.Num("moneyPerLot", KM_MoneyPerPricePerLot(st.symbol), 4);
+         Tel.Num("assistTravel", g_view[i].atr * InpAssistHorizonAtr, 5);
+        }
+      else
+         Tel.Bool("viewReady", false);
+
+      if(i < g_n)
+        {
+         Tel.Bool("suiteEa1Live", Bus[i].Alive(KM_EA_ENTRY));
+         Tel.Int("lastEntryTs",   (long)g_lastEntry[i]);
+        }
+
+      Tel.EndObj();
+     }
+   Tel.EndArr();
+
+   Tel.Obj("assist");
+   Tel.Str("status",     g_assistWhy);
+   Tel.Int("count",      g_assistCount);
+   Tel.Int("lastTs",     (long)g_lastAssist);
+   Tel.Num("triggerDd",  InpAssistTriggerDd, 2);
+   Tel.Num("coverage",   InpAssistCoverage, 2);
+   Tel.Num("horizonAtr", InpAssistHorizonAtr, 2);
+   Tel.Num("maxOvershoot", InpAssistMaxOvershoot, 2);
+   Tel.Num("minScore",   InpAssistMinScore, 0);
+   Tel.Num("minAdx",     InpAssistMinAdx, 0);
+   Tel.EndObj();
+
+   Tel.Obj("activity");
+   Tel.Int("entries",  g_entryCount);
+   Tel.Int("assists",  g_assistCount);
+   Tel.Int("closes",   g_closeCount);
+   Tel.Str("lastAction", g_lastAction);
+   Tel.EndObj();
+
+   Tel.Obj("config");
+   Tel.Str("workTf",          EnumToString(InpWorkTf));
+   Tel.Bool("allowEntries",   InpAllowEntries);
+   Tel.Bool("allowAssist",    InpAllowAssist);
+   Tel.Bool("closePortfolio", InpClosePortfolio);
+   Tel.Bool("deferToSuite",   InpDeferToSuite);
+   Tel.Num("riskPerEntry",    InpRiskPerEntry, 2);
+   Tel.Num("pfTargetPerLot",  InpPfTargetPerLot, 2);
+   Tel.Num("pfMinTarget",     InpPfMinTarget, 2);
+   Tel.EndObj();
+
+   Tel.HealthBlock();
+   Tel.End();
+  }
+
+//+------------------------------------------------------------------+
 void Panel(void)
   {
+//--- exported here because every OnTick exit path reaches Panel()
+   WriteTelemetry();
+
    if(!InpShowPanel)
       return;
 

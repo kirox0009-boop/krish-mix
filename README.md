@@ -283,6 +283,7 @@ XAUUSD M1  -> KM2        XAUUSD M1 -> KM4        (koi bhi) -> KM6
 | [`Portfolio.mqh`](MQL5/Include/KrishMix/Portfolio.mqh) | **NEW** — multi-symbol book + assist math |
 | [`Positions.mqh`](MQL5/Include/KrishMix/Positions.mqh) | Book scan, baskets, recovery groups |
 | [`Execution.mqh`](MQL5/Include/KrishMix/Execution.mqh) | Order send/close, retries, TP validation, margin trimming |
+| [`Telemetry.mqh`](MQL5/Include/KrishMix/Telemetry.mqh) | **NEW** — dashboard ke liye JSON snapshot writer (read-only export) |
 
 ### Magic numbers
 
@@ -302,7 +303,7 @@ magic = base + eaSlot*10 + (buy ? 1 : 2)
 ## Installation
 
 1. MT5 → **File → Open Data Folder**
-2. `MQL5/Include/KrishMix/` — **gyarah** `.mqh` files copy karein
+2. `MQL5/Include/KrishMix/` — **baarah** `.mqh` files copy karein
 3. `MQL5/Experts/KrishMix/` — **chhe** `.mq5` files copy karein
 4. **F4** → har EA file **F7** (Compile). `0 errors` aana chahiye
 5. Charts attach karein (upar layout dekhein), `MQL5/Presets/` se matching `.set` **Load** karein
@@ -312,6 +313,37 @@ magic = base + eaSlot*10 + (buy ? 1 : 2)
 **Check:** kisi bhi panel pe `Suite: E1-Entry:on ... E6-TfSelect:on` dikhna chahiye.
 
 **Requirements:** MT5, **hedging account** (netting pe sab `OnInit` me reject karenge).
+
+---
+
+## Live dashboard
+
+Browser me live dekhein: **kaun trade chal raha hai, kis order pe kaun si strategy hai, bot ne kya socha**, plus equity / floating P&L / drawdown / realised P&L graphs.
+
+```bash
+cd dashboard
+pip install MetaTrader5      # sirf Windows, aur usi machine pe jahan terminal chal raha hai
+python run.py                # http://127.0.0.1:8734
+```
+
+Python 3.9+ stdlib ke alawa **koi dependency nahi** — koi npm, koi build step, koi CDN. MT5 ke bina UI dekhna hai to `python run.py --demo`.
+
+**EA side pe kuch karna nahi hai.** Har EA me `InpTelemetry = true` (default) hai; woh `MQL5\Files\KrishMix\telemetry\` me har `InpTelemetrySec` second ek JSON snapshot likhta hai. Dashboard terminal ka data folder khud dhoondh leta hai. Yeh export **read-only** hai — dashboard order place, modify ya close **nahi kar sakta**, aisa koi endpoint hi nahi hai.
+
+**Developer mode (PIN wala):**
+
+| | Normal mode | Developer mode |
+|---|---|---|
+| Equity, P&L, drawdown, live trades, closed trades | ✅ | ✅ |
+| **Kis order pe kaun si strategy** (`PLAYBOOK`, `INSIDEBAR`, `GRID`, `RECOVERY`, `ASSIST`) | ✅ | ✅ |
+| Kaun se EA zinda hain, per-symbol portfolio | ✅ | ✅ |
+| Score, saare indicator values, block histogram | ❌ | ✅ |
+| Thresholds / floors / config, grid-hedge sizing working | ❌ | ✅ |
+| Playbook narrative, fib levels, KM6 scores | ❌ | ✅ |
+
+Pehli run pe PIN generate hoke **ek baar** print hota hai — likh lein. Badalna: `python run.py --set-pin <naya>`. PIN sirf salted `pbkdf2` hash me store hota hai, aur normal mode **allow-list** se bana hai, to naya telemetry field bhi default se hidden rehta hai.
+
+Poori detail, API, options aur security note: **[`dashboard/README.md`](dashboard/README.md)**.
 
 ---
 
@@ -411,12 +443,14 @@ Sab diagnostics **Toolbox → Experts** me.
 
 Sandbox me MQL5 toolchain nahi hai, to **yeh code compile ya backtest nahi hua.** Script se jo verify kiya gaya:
 
-- 17 files structurally balanced (braces, parens, brackets)
+- 18 files structurally balanced (braces, parens, brackets)
 - Saare `KM_*` identifiers defined; 10 classes ke saare method calls resolve (object, array-of-object, aur static)
 - Saare struct field accesses valid; reset functions har field cover karte hain
 - Har `Inp*` apne EA me declared; koi unused nahi
-- **Saare 6 presets source defaults se generate hue** — 243 keys, key-for-key parity guaranteed
+- **Saare 6 presets source defaults se generate hue** — 255 keys, key-for-key parity guaranteed (telemetry keys bhi included)
 - **Numerically verified:** fib projection math (dono direction), EA3 recovery sizing, EA5 cross-asset assist sizing across chhe assets, overshoot guard thresholds
 - **Behaviourally verified** synthetic data pe: INSIDEBAR ~3.4 triggers/din M30 pe (risk 0.88 ATR → target 2.64 ATR), fresh gate trend-joining entries ka ~47% block karta hai, FIBREV 12.6% scans, swing/pattern/level detectors sab usable rate pe
 
 MetaEditor me **F7** se compile karein. Error aaye to error text bhej dein.
+
+**Dashboard side:** backend aur frontend dono **actually test kiye gaye hain** — `dashboard/selftest.py` asli server uthata hai aur usse drive karta hai (attribution, redaction leak-check, PIN unlock/reject/lockout, SQLite, SSE, path traversal), `dashboard/frontend_check.py` JS/CSS/DOM validate karta hai. Dono: **ALL CHECKS PASSED**. Jo test nahi hua: asli `MetaTrader5` package ka path (woh Windows-only hai) — isliye `DemoSource` bana hai.
